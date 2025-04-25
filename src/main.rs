@@ -42,7 +42,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     loop {
         tokio::select! {
             // If the user sends a command/message, handle it 
-            Ok(Some(line)) = stdin.next_line() => input::handle_input_line(&mut swarm, line, topic.clone())?,
+            Ok(Some(line)) = stdin.next_line() => input::handle_input_line(&mut swarm, line, topic.clone(), &mut stdin).await?,
             
             // Catch events and handle them
             event = swarm.select_next_some() => events::handle_event(&mut swarm, event, &mut chat_state)

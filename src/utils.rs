@@ -94,12 +94,16 @@ pub async fn prompt_for_nickname(
             }
         }
     }
+    set_nickname(swarm, nickname);
+}
 
+pub fn set_nickname(swarm: &mut libp2p::Swarm<SwapBytesBehaviour>, nickname: String) {
     let peer_id = swarm.local_peer_id().to_string();
     // Try and make 
     add_peer_to_store(
         &mut swarm.behaviour_mut().kademlia,
         peer_id.clone(),
-        nickname + "." + &peer_id[47..],
+        nickname.clone() + "." + &peer_id[47..],
     ).expect("Couldn't add nickname to store");
+    println!("Nickname set to '{}'", nickname)
 }
