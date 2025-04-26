@@ -15,3 +15,5 @@ libp2p = { version = "0.55", features = ["tokio", "gossipsub", "mdns", "noise", 
 serde = { version = "1.0", features = ["derive"] }
 serde_cbor = "0.10"
 regex = "1.10.6"
+hex = "0.4.3"
+sha2 = "0.10.8"
