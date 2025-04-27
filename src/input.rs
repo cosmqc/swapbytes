@@ -9,7 +9,7 @@ use std::path::Path;
 use std::str::FromStr;
 use tokio::io::{BufReader, Lines, Stdin};
 
-use crate::files::{LocalFileStore, FileRequest};
+use crate::files::{DirectMessage, FileRequest, LocalFileStore};
 use crate::events::SwapBytesBehaviour;
 use crate::utils::{self, add_peer_to_store, prompt_for_nickname, ChatState};
 
@@ -76,32 +76,6 @@ pub async fn handle_input_line(
             Ok(())
         }
 
-        "get_peer" => {
-            if args.len() < 2 || args[1].len() == 0 {
-                println!("not enough arguments");
-                return Ok(());
-            }
-            let title = args[1].clone();
-            let key = kad::RecordKey::new(&title);
-            swarm.behaviour_mut().kademlia.get_record(key);
-            return Ok(());
-        }
-
-        "add_peer" => {
-            if args.len() < 3 || args[1].len() == 0 {
-                println!("Not enough arguments");
-                return Ok(());
-            }
-            add_peer_to_store(
-                &mut swarm.behaviour_mut().kademlia,
-                PeerId::from_str(&args[1].to_string())?,
-                args[2].clone(),
-                chat_state,
-            ).expect("Failed to add peer to store");
-
-            Ok(())
-        }
-
         "upload" => {
             if !(2..=3).contains(&args.len()) {
                 println!("Usage: /upload <path_to_file> <description?>");
@@ -160,7 +134,7 @@ pub async fn handle_input_line(
                     {
                         println!("Error publishing metadata: {e}");
                     } else {
-                        println!("Uploaded and shared metadata for file: {}", filename);
+                        println!("Uploaded and shared metadata for file {} with hash {}", filename, hash);
                     }
                 } else {
                     println!("Error serializing metadata");
@@ -211,24 +185,39 @@ pub async fn handle_input_line(
         }
 
         "request_file" => {
-            let Some(peer_id_str) = args.get(1) else {
-                eprintln!("Failed to get peerid");
+            if args.len() != 3 {
+                println!("Usage: /request_file <peerid> <filehash>");
+                return Ok(());
+            }
+            
+            // Parse arguments
+            let peer_id_str = args.get(1).expect("Failed to parse peerid");
+            let Ok(peer_id) = PeerId::from_str(&peer_id_str) else {
+                eprintln!("Invalid peerid");
                 return Ok(());
             };
+            let filename = args.get(2).expect("Failed to parse filename");
 
-            let Ok(peer_id) = PeerId::from_str(peer_id_str) else {
+            // Send request for file
+            swarm.behaviour_mut().file_transfer.send_request(&peer_id, FileRequest(filename.clone()));
+
+            Ok(())
+        }
+
+        "dm" => {
+            if args.len() != 3 {
+                println!("Usage: /dm <nickname> <message>");
+                return Ok(());
+            }
+            let peer_id_str = args.get(1).expect("Failed to parse peerid");
+            let Ok(peer_id) = PeerId::from_str(&peer_id_str) else {
                 eprintln!("Invalid peerid");
                 return Ok(());
             };
 
-            let Some(filename) = args.get(2) else {
-                eprintln!("Failed to get filename");
-                return Ok(());
-            };
-
-            println!("{:?}", swarm.connected_peers().collect::<Vec<_>>());
-            swarm.behaviour_mut().request_response.send_request(&peer_id, FileRequest(filename.clone()));
-
+            let message = args.get(2).expect("Failed to parse message");
+            swarm.behaviour_mut().direct_message.send_request(&peer_id, DirectMessage(message.to_string()));
+            
             Ok(())
         }
 

@@ -4,7 +4,7 @@ use libp2p::{
 use std::error::Error;
 use libp2p::request_response;
 
-use crate::{events::kad::QueryId, files::LocalFileStore, utils};
+use crate::{events::kad::QueryId, files::{DirectMessage, DirectMessageResponse, LocalFileStore}, utils};
 use crate::files::{FileMetadata, FileRequest, FileResponse};
 use crate::utils::{ChatState, NicknameUpdate, PeerInfo};
 
@@ -18,7 +18,8 @@ pub struct ChatBehaviour {
 pub struct SwapBytesBehaviour {
     pub chat: ChatBehaviour,
     pub kademlia: kad::Behaviour<MemoryStore>,
-    pub request_response: request_response::cbor::Behaviour<FileRequest, FileResponse>
+    pub file_transfer: request_response::cbor::Behaviour<FileRequest, FileResponse>,
+    pub direct_message: request_response::cbor::Behaviour<DirectMessage, DirectMessageResponse>
 }
 
 /// Setup different sets of behaviour for the app.
@@ -38,9 +39,16 @@ pub fn get_swapbytes_behaviour(key: &Keypair) -> Result<SwapBytesBehaviour, Box<
             key.public().to_peer_id(),
             MemoryStore::new(key.public().to_peer_id()),
         ),
-        request_response: request_response::cbor::Behaviour::new(
+        file_transfer: request_response::cbor::Behaviour::new(
             [(
                 StreamProtocol::new("/file-exchange/1"),
+                ProtocolSupport::Full,
+            )],
+            request_response::Config::default(), 
+        ),
+        direct_message: request_response::cbor::Behaviour::new(
+            [(
+                StreamProtocol::new("/direct-message/1"),
                 ProtocolSupport::Full,
             )],
             request_response::Config::default(), 
@@ -62,23 +70,28 @@ pub async fn handle_event(
         }
 
         // Gossipsub and MDNS (peer discovery and chat)
-        SwarmEvent::Behaviour(SwapBytesBehaviourEvent::Chat(event)) => {
-            handle_chat_event(swarm, event, chat_state);
-        }
+        SwarmEvent::Behaviour(SwapBytesBehaviourEvent::Chat(
+            event
+        )) => handle_chat_event(swarm, event, chat_state),
 
         // Kad events (any data thats supposed to be public, nicknames, file metadata)
         SwarmEvent::Behaviour(SwapBytesBehaviourEvent::Kademlia(
             kad::Event::OutboundQueryProgressed { id, result, .. },
         )) => handle_kad_event(id, swarm, result, chat_state),
 
-        // Request/response events (file sharing)
-        SwarmEvent::Behaviour(SwapBytesBehaviourEvent::RequestResponse(
+        // File sharing with request/response pattern
+        SwarmEvent::Behaviour(SwapBytesBehaviourEvent::FileTransfer(
             request_response::Event::Message { peer, connection_id, message, .. },
-        )) => handle_reqres_event(peer, connection_id, message, swarm, chat_state, file_store).await,
+        )) => handle_file_transfer_event(peer, connection_id, message, swarm, chat_state, file_store).await,
+
+        // Direct messages with request/response pattern
+        SwarmEvent::Behaviour(SwapBytesBehaviourEvent::DirectMessage(
+            request_response::Event::Message { peer, connection_id, message, .. },
+        )) => handle_direct_message_event(peer, connection_id, message, swarm, chat_state, file_store).await,
 
         // Default, do nothing
-        default => println!("{default:?}")
-        // _ => {}
+        // default => println!("{default:?}")
+        _ => {}
     }
 }
 
@@ -110,7 +123,7 @@ fn handle_chat_event(
                 swarm.behaviour_mut().kademlia.get_closest_peers(peer_id.clone());
 
                 // Query for nickname
-                if !chat_state.nicknames.contains_key(&peer_id.to_string()) {
+                if !chat_state.peer_to_nickname.contains_key(&peer_id.to_string()) {
                     let key = kad::RecordKey::new(&format!("peer::{}", peer_id));
                     swarm.behaviour_mut().kademlia.get_record(key);
                 }
@@ -138,7 +151,7 @@ fn handle_chat_event(
             // Try to interpret the message as a NicknameUpdate
             if let Ok(update) = serde_cbor::from_slice::<NicknameUpdate>(&message.data) {
                 chat_state
-                    .nicknames
+                    .peer_to_nickname
                     .insert(update.peer_id.clone(), update.nickname);
             } else {
                 // If the message is empty, ignore the message
@@ -147,7 +160,7 @@ fn handle_chat_event(
                 }
 
                 // Otherwise output the message
-                match chat_state.nicknames.get(&peer_id.to_string()) {
+                match chat_state.peer_to_nickname.get(&peer_id.to_string()) {
                     // If we've got the nickname cached, print that immediately
                     Some(nickname) => {
                         println!("{}: {}", nickname, String::from_utf8_lossy(&message.data))
@@ -159,12 +172,17 @@ fn handle_chat_event(
 
                         chat_state
                             .pending_messages
-                            .insert(query_id, (peer_id.clone(), message.data));
+                            .insert(query_id, (peer_id.clone(), message.data.clone()));
                     }
                 }
             }
-        }
 
+            let key = kad::RecordKey::new(&peer_id.to_bytes());
+            let query_id = swarm.behaviour_mut().kademlia.get_record(key);
+
+            // Store callback so it gets printed when the nickname is found
+            chat_state.pending_messages.insert(query_id, (peer_id.clone(), message.data));
+        },
         // default => println!("{default:?}")
         _ => {}
     }
@@ -180,10 +198,9 @@ fn handle_kad_event(
     match result {
         // Response from DHT request
         kad::QueryResult::GetRecord(Ok(kad::GetRecordOk::FoundRecord(peer_record))) => {
-            // Deduplicate responses if multiple peers answer, only keep the ones with a peer id
-            if peer_record.peer.is_none() || !chat_state.handled_keys.insert(id.to_string()) {
-                return;
-            }
+            // Store callback so it gets printed when the nickname is found
+            println!("{:?}", peer_record);
+            // if let Some(callback) = chat_state.pending_callbacks.call(&id, peer_record.record.);
 
             // Match on the custom response type (peer, file, file_index, etc)
             let record_key = String::from_utf8_lossy(peer_record.record.key.as_ref());
@@ -194,7 +211,7 @@ fn handle_kad_event(
                         match serde_cbor::from_slice::<PeerInfo>(&peer_record.record.value) {
                             Ok(peer) => {
                                 // Regardless of if the message exists, update the nickname
-                                chat_state.nicknames.insert(peer.peerid, peer.nickname.clone());
+                                chat_state.peer_to_nickname.insert(peer.peerid, peer.nickname.clone());
                                 
                                 if msg.is_empty() {
                                     return;
@@ -236,7 +253,7 @@ fn handle_kad_event(
                         Some(peerid) => {
                             let peerid_str = peerid.to_string();
                             chat_state
-                                .nicknames
+                                .peer_to_nickname
                                 .get(&peerid_str)
                                 .cloned()
                                 .unwrap_or(peerid_str)
@@ -283,7 +300,7 @@ fn handle_kad_event(
     }
 }
 
-async fn handle_reqres_event(
+async fn handle_file_transfer_event(
     peer_id: PeerId,
     connection_id: ConnectionId,
     message: Message<FileRequest, FileResponse>,
@@ -296,11 +313,38 @@ async fn handle_reqres_event(
             println!("request {:?}", request);
             let fileid = request.0;
             let file_bytes = file_store.get_file(fileid).unwrap_or_default();
-            swarm.behaviour_mut().request_response.send_response(channel, FileResponse(file_bytes))
+            swarm.behaviour_mut().file_transfer.send_response(channel, FileResponse(file_bytes))
                 .expect("Failed to send file response");
         }
         Message::Response { response, .. } => {
             println!("response: {:?}", response);
         }
+    }
+}
+
+async fn handle_direct_message_event(
+    peer_id: PeerId,
+    connection_id: ConnectionId,
+    message: Message<DirectMessage, DirectMessageResponse>,
+    swarm: &mut Swarm<SwapBytesBehaviour>,
+    chat_state: &mut ChatState,
+    file_store: &mut LocalFileStore
+) {
+    match message {
+        Message::Request { request, channel, .. } => {
+            // Output DM to user
+            println!("*DM*: {}", request.0);
+
+            // Send response so request is fulfilled
+            swarm.behaviour_mut()
+                .direct_message
+                .send_response(
+                    channel,
+                    DirectMessageResponse(true)
+                ).expect("Failed to send file response")
+        },
+
+        // Ignore response messages
+        Message::Response { .. } => {}
     }
 }

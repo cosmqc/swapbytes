@@ -18,7 +18,8 @@ pub struct PeerInfo {
 pub struct ChatState {
     pub pending_messages: HashMap<kad::QueryId, (PeerId, Vec<u8>)>,
     pub handled_keys: HashSet<String>,
-    pub nicknames: HashMap<String, String>,
+    pub peer_to_nickname: HashMap<String, String>,
+    pub nickname_to_peer: HashMap<String, String>,
     pub current_topic: IdentTopic,
 }
 
@@ -27,7 +28,8 @@ impl ChatState {
         ChatState {
             pending_messages: HashMap::new(),
             handled_keys: HashSet::new(),
-            nicknames: HashMap::new(),
+            peer_to_nickname: HashMap::new(),
+            nickname_to_peer: HashMap::new(),
             current_topic: IdentTopic::new("chat"),
         }
     }
@@ -63,9 +65,21 @@ pub fn add_peer_to_store(
     };
     store
         .put_record(record, kad::Quorum::One)
-        .expect("Failed to store peer.");
+        .expect("Failed to store peer w peerid key.");
 
-    chat_state.nicknames.insert(peerid.to_string(), nickname);
+    // Save nickname -> data relation
+    let record = kad::Record {
+        key: kad::RecordKey::new(&format!("peer::{}", nickname)),
+        value: peer_info_bytes.clone(),
+        publisher: Some(peerid),
+        expires: None,
+    };
+    store
+        .put_record(record, kad::Quorum::One)
+        .expect("Failed to store peer w nickname key.");
+
+    chat_state.peer_to_nickname.insert(peerid.to_string(), nickname.clone());
+    chat_state.nickname_to_peer.insert(nickname, peerid.to_string());
 
     return Ok(());
 }
@@ -105,7 +119,7 @@ pub fn set_nickname(swarm: &mut libp2p::Swarm<SwapBytesBehaviour>, nickname: Opt
     let new_nickname = if nickname.is_some() {
         nickname.unwrap() + "." + &peer_id.to_string()[47..]
     } else {
-        chat_state.nicknames.get(&peer_id.to_string()).unwrap_or(
+        chat_state.peer_to_nickname.get(&peer_id.to_string()).unwrap_or(
             &"Failed to get own nickname".to_string()
         ).to_string()
     };
