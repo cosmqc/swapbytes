@@ -9,7 +9,7 @@ use std::path::Path;
 use std::str::FromStr;
 use tokio::io::{BufReader, Lines, Stdin};
 
-use crate::files::LocalFileStore;
+use crate::files::{LocalFileStore, FileRequest};
 use crate::events::SwapBytesBehaviour;
 use crate::utils::{self, add_peer_to_store, prompt_for_nickname, ChatState};
 
@@ -207,6 +207,28 @@ pub async fn handle_input_line(
                 let key = kad::RecordKey::new(&format!("file_index::{}", peer_id));
                 swarm.behaviour_mut().kademlia.get_record(key);
             }
+            Ok(())
+        }
+
+        "request_file" => {
+            let Some(peer_id_str) = args.get(1) else {
+                eprintln!("Failed to get peerid");
+                return Ok(());
+            };
+
+            let Ok(peer_id) = PeerId::from_str(peer_id_str) else {
+                eprintln!("Invalid peerid");
+                return Ok(());
+            };
+
+            let Some(filename) = args.get(2) else {
+                eprintln!("Failed to get filename");
+                return Ok(());
+            };
+
+            println!("{:?}", swarm.connected_peers().collect::<Vec<_>>());
+            swarm.behaviour_mut().request_response.send_request(&peer_id, FileRequest(filename.clone()));
+
             Ok(())
         }
 

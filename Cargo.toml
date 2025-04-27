@@ -10,10 +10,13 @@ tokio = { version = "1.44.0", features = ["full"] }
 async-trait = "0.1.81"
 # futures and streams
 futures = "0.3.31"
-# libp2p
-libp2p = { version = "0.55", features = ["tokio", "gossipsub", "mdns", "noise", "macros", "tcp", "yamux", "quic", "kad"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_cbor = "0.10"
 regex = "1.10.6"
 hex = "0.4.3"
 sha2 = "0.10.8"
+clap = { version = "4.5.32", features = ["derive"] }
+
+[dependencies.libp2p]
+version = "0.55"
+features = ["tokio", "noise", "macros", "tcp", "quic", "yamux", "cbor", "request-response", "gossipsub", "mdns", "kad"]

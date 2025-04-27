@@ -1,14 +1,11 @@
 use libp2p::{
-    gossipsub,
-    identity::Keypair,
-    kad::{self, store::MemoryStore, QueryResult},
-    mdns,
-    swarm::{NetworkBehaviour, Swarm, SwarmEvent},
+    gossipsub, identity::Keypair, kad::{self, store::MemoryStore, QueryResult}, mdns, request_response::{Message, ProtocolSupport}, swarm::{ConnectionId, NetworkBehaviour, Swarm, SwarmEvent}, PeerId, StreamProtocol
 };
 use std::error::Error;
+use libp2p::request_response;
 
-use crate::{events::kad::QueryId, utils};
-use crate::files::FileMetadata;
+use crate::{events::kad::QueryId, files::LocalFileStore, utils};
+use crate::files::{FileMetadata, FileRequest, FileResponse};
 use crate::utils::{ChatState, NicknameUpdate, PeerInfo};
 
 #[derive(NetworkBehaviour)]
@@ -21,6 +18,7 @@ pub struct ChatBehaviour {
 pub struct SwapBytesBehaviour {
     pub chat: ChatBehaviour,
     pub kademlia: kad::Behaviour<MemoryStore>,
+    pub request_response: request_response::cbor::Behaviour<FileRequest, FileResponse>
 }
 
 /// Setup different sets of behaviour for the app.
@@ -40,14 +38,22 @@ pub fn get_swapbytes_behaviour(key: &Keypair) -> Result<SwapBytesBehaviour, Box<
             key.public().to_peer_id(),
             MemoryStore::new(key.public().to_peer_id()),
         ),
+        request_response: request_response::cbor::Behaviour::new(
+            [(
+                StreamProtocol::new("/file-exchange/1"),
+                ProtocolSupport::Full,
+            )],
+            request_response::Config::default(), 
+        )
     })
 }
 
 /// High level event handler, filters by behaviour type and delegates to lower-level handlers
-pub fn handle_event(
+pub async fn handle_event(
     swarm: &mut Swarm<SwapBytesBehaviour>,
     event: SwarmEvent<SwapBytesBehaviourEvent>,
     chat_state: &mut ChatState,
+    file_store: &mut LocalFileStore
 ) {
     match event {
         // Your node has connected to the network
@@ -60,14 +66,19 @@ pub fn handle_event(
             handle_chat_event(swarm, event, chat_state);
         }
 
-        // Kad events (nickname updates)
+        // Kad events (any data thats supposed to be public, nicknames, file metadata)
         SwarmEvent::Behaviour(SwapBytesBehaviourEvent::Kademlia(
             kad::Event::OutboundQueryProgressed { id, result, .. },
         )) => handle_kad_event(id, swarm, result, chat_state),
 
+        // Request/response events (file sharing)
+        SwarmEvent::Behaviour(SwapBytesBehaviourEvent::RequestResponse(
+            request_response::Event::Message { peer, connection_id, message, .. },
+        )) => handle_reqres_event(peer, connection_id, message, swarm, chat_state, file_store).await,
+
         // Default, do nothing
-        // default => println!("{default:?}")
-        _ => {}
+        default => println!("{default:?}")
+        // _ => {}
     }
 }
 
@@ -269,5 +280,27 @@ fn handle_kad_event(
 
         // default => println!("{default:?}")
         _ => {}
+    }
+}
+
+async fn handle_reqres_event(
+    peer_id: PeerId,
+    connection_id: ConnectionId,
+    message: Message<FileRequest, FileResponse>,
+    swarm: &mut Swarm<SwapBytesBehaviour>,
+    chat_state: &mut ChatState,
+    file_store: &mut LocalFileStore
+) {
+    match message {
+        Message::Request { request, channel, .. } => {
+            println!("request {:?}", request);
+            let fileid = request.0;
+            let file_bytes = file_store.get_file(fileid).unwrap_or_default();
+            swarm.behaviour_mut().request_response.send_response(channel, FileResponse(file_bytes))
+                .expect("Failed to send file response");
+        }
+        Message::Response { response, .. } => {
+            println!("response: {:?}", response);
+        }
     }
 }

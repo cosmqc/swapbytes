@@ -5,15 +5,28 @@ mod utils;
 
 use files::LocalFileStore;
 use futures::StreamExt;
-use libp2p::{kad::Mode, noise, tcp, yamux};
+use libp2p::{kad::Mode, noise, tcp, yamux, Multiaddr};
 use std::{error::Error, time::Duration};
 use tokio::io::{self, AsyncBufReadExt};
 
 use crate::events::get_swapbytes_behaviour;
 use crate::utils::ChatState;
 
+use clap::Parser;
+
+#[derive(Parser, Debug)]
+#[clap(name = "swapbytes")]
+struct Cli {
+    #[arg(long)]
+    port: Option<String>,
+
+    #[arg(long)]
+    peer: Option<Multiaddr>,
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
+    let cli = Cli::parse();
     // Initialize swarm
     let mut swarm = libp2p::SwarmBuilder::with_new_identity()
         .with_tokio()
@@ -40,7 +53,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .gossipsub
         .subscribe(&chat_state.current_topic.clone())?;
     swarm.behaviour_mut().kademlia.set_mode(Some(Mode::Server));
-    swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse()?)?;
+
+    let listen_port = cli.port.unwrap_or("0".to_string());
+    let multiaddr = format!("/ip4/0.0.0.0/tcp/{listen_port}");
+    swarm.listen_on(multiaddr.parse()?)?;
 
     // Create an input for the user and ask them for their nickname
     let mut stdin = io::BufReader::new(io::stdin()).lines();
@@ -48,6 +64,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     println!("Enter chat messages one line at a time:");
 
+    // Main loop
     loop {
         tokio::select! {
             // If the user sends a command/message, handle it
@@ -62,7 +79,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 ).await?,
 
             // Catch events and handle them
-            event = swarm.select_next_some() => events::handle_event(&mut swarm, event, &mut chat_state)
+            event = swarm.select_next_some() => events::handle_event(&mut swarm, event, &mut chat_state, &mut file_store).await
         }
     }
 }

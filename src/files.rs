@@ -4,6 +4,12 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileRequest(pub String);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileResponse(pub Vec<u8>);
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileMetadata {
     pub filename: String,
@@ -62,7 +68,12 @@ impl LocalFileStore {
     pub fn all_hashes(&self) -> Vec<String> {
         self.files.keys().cloned().collect()
     }
-}
+
+    /// Get a file from local storage, wrap in Option
+    pub fn get_file(&self, hash: String) -> Option<Vec<u8>> {
+        self.files.get(&hash).cloned()
+    }
+}   
 
 /// Generate a SHA256 hash of a given byte array (file)
 pub fn compute_hash(data: &[u8]) -> String {
