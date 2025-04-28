@@ -2,7 +2,9 @@ use hex;
 use libp2p::PeerId;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::{collections::HashMap, path::Path};
+use tokio::{fs::{self, File}, io};
+use tokio::io::AsyncWriteExt;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DirectMessage {
@@ -13,11 +15,11 @@ pub struct DirectMessage {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AcknowledgeResponse (pub bool);
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct FileRequest(pub String);
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct FileResponse(pub Vec<u8>);
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileResponse {
+    pub file: Vec<u8>,
+    pub metadata: FileMetadata
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileMetadata {
@@ -94,4 +96,19 @@ pub fn compute_hash(data: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(data);
     hex::encode(hasher.finalize())
+}
+
+/// Saves a Vec<u8> to `traded_files/filename`, creating the folder if needed
+pub async fn save_file_to_filesystem(data: Vec<u8>, filename: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let dir_path = Path::new("traded_files");
+
+    // Create the directory if it doesn't exist
+    if !dir_path.exists() {
+        fs::create_dir_all(dir_path).await?;
+    }
+
+    let file_path = dir_path.join(filename);
+    let mut file = File::create(file_path).await?;
+    file.write_all(&data).await?;
+    Ok(())
 }

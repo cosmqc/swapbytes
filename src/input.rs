@@ -10,7 +10,7 @@ use std::str::FromStr;
 use tokio::io::{BufReader, Lines, Stdin};
 use serde::{Deserialize, Serialize};
 
-use crate::files::{DirectMessage, FileRequest, LocalFileStore};
+use crate::files::{DirectMessage, FileResponse, LocalFileStore};
 use crate::events::SwapBytesBehaviour;
 use crate::utils::{self, prompt_for_nickname, ChatState, TradeRequest};
 
@@ -179,50 +179,30 @@ pub async fn handle_input_line(
             Ok(())
         }
 
-        "get_file_metadata" => {
-            if args.len() < 2 || args[1].len() == 0 {
-                println!("Usage: /get_file_metadata <file_hash>");
-                return Ok(());
-            }
+        // "get_file_metadata" => {
+        //     if args.len() < 2 || args[1].len() == 0 {
+        //         println!("Usage: /get_file_metadata <file_hash>");
+        //         return Ok(());
+        //     }
 
-            let file_hash = args[1].clone();
+        //     let file_hash = args[1].clone();
 
-            // Query the DHT for the file metadata
-            let key = kad::RecordKey::new(&format!("file::{}", file_hash));
-            swarm.behaviour_mut().kademlia.get_record(key.clone());
+        //     // Query the DHT for the file metadata
+        //     let key = kad::RecordKey::new(&format!("file::{}", file_hash));
+        //     swarm.behaviour_mut().kademlia.get_record(key.clone());
 
-            Ok(())
-        }
+        //     Ok(())
+        // }
 
-        "list_files" => {
-            let peers: Vec<PeerId> = swarm.connected_peers().cloned().collect();
-            for peer_id in peers {
-                let key = kad::RecordKey::new(&format!("file_index::{}", peer_id));
-                let queryid = swarm.behaviour_mut().kademlia.get_record(key);
-                chat_state.pending_keys.insert(queryid);
-            }
-            Ok(())
-        }
-
-        "request_file" => {
-            if args.len() != 3 {
-                println!("Usage: /request_file <peerid> <filehash>");
-                return Ok(());
-            }
-            
-            // Parse arguments
-            let peer_id_str = args.get(1).expect("Failed to parse peerid");
-            let Ok(peer_id) = PeerId::from_str(&peer_id_str) else {
-                eprintln!("Invalid peerid");
-                return Ok(());
-            };
-            let filename = args.get(2).expect("Failed to parse filename");
-
-            // Send request for file
-            swarm.behaviour_mut().file_transfer.send_request(&peer_id, FileRequest(filename.clone()));
-
-            Ok(())
-        }
+        // "list_files" => {
+        //     let peers: Vec<PeerId> = swarm.connected_peers().cloned().collect();
+        //     for peer_id in peers {
+        //         let key = kad::RecordKey::new(&format!("file_index::{}", peer_id));
+        //         let queryid = swarm.behaviour_mut().kademlia.get_record(key);
+        //         chat_state.pending_keys.insert(queryid);
+        //     }
+        //     Ok(())
+        // }
 
         "dm" => {
             if args.len() != 3 {
@@ -310,7 +290,54 @@ pub async fn handle_input_line(
                 .send_request(&peerid,trade);
 
             println!("Trade request sent to {}, transfer will happen once they accept", nickname);
-            
+
+            Ok(())
+        }
+
+        "trade_accept" => {
+            if args.len() != 2 {
+                println!("Usage: /trade_accept <nickname>");
+                return Ok(());
+            }
+
+            // Process nickname
+            let Some(nickname) = args.get(1) else {
+                eprintln!("Failed to parse nickname");
+                return Ok(());
+            };
+            let Some(peer_id_str) = chat_state.nicknames.get_key_from_value(nickname) else {
+                eprintln!("Nickname not found");
+                return Ok(());
+            };
+            let Ok(peerid) = PeerId::from_str(&peer_id_str) else {
+                eprintln!("Failed to parse retrieved nickname");
+                return Ok(());
+            };
+
+            let Some(trade_request) = chat_state.incoming_trades.get(&peerid.to_string()) else {
+                eprintln!("You don't have a trade request from this user");
+                return Ok(());
+            };
+
+            // Check the requested file exists. This should have already been checked, but just incase
+            let Some(requested_file) = file_store.get_file(&trade_request.requested_file) else {
+                eprintln!("The requested file doesn't exist. Something has gone wrong.");
+                return Ok(());
+            };
+
+            // Fetch the metadata
+            let Some(metadata) = file_store.get_metadata(&trade_request.requested_file) else {
+                eprintln!("Failed to get the metadata of the requested file.");
+                return Ok(());
+            };
+
+            let response = FileResponse{
+                file: requested_file,
+                metadata: metadata.clone()
+            };
+
+            swarm.behaviour_mut().file_transfer.send_request(&peerid, response);
+
             Ok(())
         }
 

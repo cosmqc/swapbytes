@@ -4,8 +4,8 @@ use libp2p::{
 use std::error::Error;
 use libp2p::request_response;
 
-use crate::{events::kad::QueryId, files::{AcknowledgeResponse, DirectMessage, LocalFileStore}, input::ChatMessage, utils::{self, NicknameUpdate, TradeRequest}};
-use crate::files::{FileMetadata, FileRequest, FileResponse};
+use crate::{events::kad::QueryId, files::{save_file_to_filesystem, AcknowledgeResponse, DirectMessage, LocalFileStore}, input::ChatMessage, utils::{self, NicknameUpdate, TradeRequest}};
+use crate::files::{FileMetadata, FileResponse};
 use crate::utils::ChatState;
 
 #[derive(NetworkBehaviour)]
@@ -18,7 +18,7 @@ pub struct ChatBehaviour {
 pub struct SwapBytesBehaviour {
     pub chat: ChatBehaviour,
     pub kademlia: kad::Behaviour<MemoryStore>,
-    pub file_transfer: request_response::cbor::Behaviour<FileRequest, FileResponse>,
+    pub file_transfer: request_response::cbor::Behaviour<FileResponse, Option<FileResponse>>,
     pub direct_message: request_response::cbor::Behaviour<DirectMessage, AcknowledgeResponse>,
     pub nickname_update: request_response::cbor::Behaviour<NicknameUpdate, NicknameUpdate>,
     pub trade_request: request_response::cbor::Behaviour<TradeRequest, AcknowledgeResponse>
@@ -280,28 +280,6 @@ fn handle_kad_event(
     }
 }
 
-async fn handle_file_transfer_event(
-    peer_id: PeerId,
-    connection_id: ConnectionId,
-    message: Message<FileRequest, FileResponse>,
-    swarm: &mut Swarm<SwapBytesBehaviour>,
-    chat_state: &mut ChatState,
-    file_store: &mut LocalFileStore
-) {
-    match message {
-        Message::Request { request, channel, .. } => {
-            println!("request {:?}", request);
-            let fileid = request.0;
-            let file_bytes = file_store.get_file(&fileid).unwrap_or_default();
-            swarm.behaviour_mut().file_transfer.send_response(channel, FileResponse(file_bytes))
-                .expect("Failed to send file response");
-        }
-        Message::Response { response, .. } => {
-            println!("response: {:?}", response);
-        }
-    }
-}
-
 async fn handle_direct_message_event(
     peer_id: PeerId,
     connection_id: ConnectionId,
@@ -369,16 +347,19 @@ async fn handle_trade_request_event(
         Message::Request { request, channel, .. } => {
             let requested_file_exists = file_store.contains_file(&request.requested_file);
             if requested_file_exists {
+                chat_state.incoming_trades.insert(peer_id.to_string(), request.clone());
+
                 let requested_file = file_store.get_metadata(&request.requested_file).unwrap();
                 println!(
-                    "{} would like to trade '{}' for their '{}'{}. Type /trade_accept to confirm trade.",
+                    "{} would like to trade '{}' for their '{}'{}. Type '/trade_accept {}' to confirm trade.",
                     request.nickname,
                     requested_file.filename,
                     request.offered_file.filename,
                     request.offered_file.description
                         .as_ref()
                         .map(|desc| format!(" ({})", desc))
-                        .unwrap_or_default()
+                        .unwrap_or_default(),
+                    request.nickname
                 );
             }
             swarm.behaviour_mut()
@@ -398,6 +379,72 @@ async fn handle_trade_request_event(
                     eprintln!("{} does not have the requested file", chat_state.nicknames.get(&peer_id.to_string()))
                 }
             };
+        }
+    }
+}
+
+async fn handle_file_transfer_event(
+    peer_id: PeerId,
+    connection_id: ConnectionId,
+    message: Message<FileResponse, Option<FileResponse>>,
+    swarm: &mut Swarm<SwapBytesBehaviour>,
+    chat_state: &mut ChatState,
+    file_store: &mut LocalFileStore
+) {
+    match message {
+        // Someone has accepted our trade request and sent their file.
+        Message::Request { request, channel, .. } => {
+            // Fetch the related trade request, otherwise drop the request
+            let Some(trade_details) = chat_state.outgoing_trades.remove(&peer_id.to_string()) else {
+                swarm
+                    .behaviour_mut()
+                    .file_transfer
+                    .send_response(
+                        channel, 
+                        None
+                    )
+                .expect("Failed to send file response");
+                return;
+            };
+
+            // Save the file sent by the other party
+            if let Err(e) = save_file_to_filesystem(request.file, &request.metadata.filename).await {
+                eprintln!("Failed to save file: {}", e);
+            }
+
+            // Construct response and send it
+            let file_bytes = file_store.get_file(&trade_details.offered_file.hash).unwrap_or_default();
+            let response = FileResponse {
+                file: file_bytes,
+                metadata: trade_details.offered_file
+            };
+            swarm.behaviour_mut().file_transfer.send_response(channel, Some(response))
+                .expect("Failed to send file response");
+
+            println!("Trade successful!")
+        }
+
+        // Someone has sent their file, so we send our file back
+        Message::Response { response, .. } => {
+            match response {
+                Some(file) => {
+                    // The trade is complete, remove its reference from the state
+                    chat_state.incoming_trades.remove(&peer_id.to_string());
+
+                    // Save the file sent by the other party
+                    if let Err(e) = save_file_to_filesystem(
+                        file.file, 
+                        &file.metadata.filename
+                    ).await {
+                        eprintln!("Failed to save file: {}", e);
+                        return;
+                    }
+
+                    println!("Trade successful!")
+                }
+
+                None => eprintln!("File transfer failed.")
+            }
         }
     }
 }
