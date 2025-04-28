@@ -45,7 +45,7 @@ pub struct SwapBytesBehaviour {
 }
 
 /// Setup different sets of behaviour for the app.
-/// Splitting them means its easier to fliter them in the event handler
+/// Splitting them means its easier to filter them in the event handler
 pub fn get_swapbytes_behaviour(key: &Keypair) -> Result<SwapBytesBehaviour, Box<dyn Error>> {
     let chat_behaviour = ChatBehaviour {
         mdns: mdns::tokio::Behaviour::new(mdns::Config::default(), key.public().to_peer_id())?,
