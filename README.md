@@ -48,7 +48,7 @@ Commands are case-insensitive, but arguments are case-sensitive.
 - `/help`: Show a help message.
 - `/nick <nickname>`: Change your nickname.
 - `/list_peers`: List all the peers currently on the network.
-- `/upload <filename>`: Upload a file to the application. This will share the name of the file, its size, and other metadata, but not the actual file. You are given a hash when you upload a file that you use to identify it.
+- `/upload <filename> <description (optional)>`: Upload a file to the application. This will share the name of the file, its size, and other metadata, but not the actual file. You are given a hash when you upload a file that you use to identify it.
 - `/list_files`: Show a list of all the files that have been uploaded, grouped by the uploader.
 - `/dm <nickname> <message>`: In the middle of a trade, you can DM the other trader to discuss private details about the trade.
 - `/trade <nickname> <your_file_hash> <their_file_hash>`: Send a trade offer that the other trader can accept or decline. Use /list_files to find other people's file hashes.

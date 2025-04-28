@@ -66,7 +66,7 @@ pub async fn handle_input_line(
             println!("/list_peers");
             println!("\tList all the peers currently on the network.");
         
-            println!("/upload <filename>");
+            println!("/upload <filename> <description (optional)>");
             println!("\tUpload a file to the application. This will share the name of the file, its size, and other metadata, but not the actual file. You are given a hash when you upload a file that you use to identify it.");
         
             println!("/list_files");
