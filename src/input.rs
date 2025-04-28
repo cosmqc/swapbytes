@@ -8,10 +8,17 @@ use std::fs;
 use std::path::Path;
 use std::str::FromStr;
 use tokio::io::{BufReader, Lines, Stdin};
+use serde::{Deserialize, Serialize};
 
 use crate::files::{DirectMessage, FileRequest, LocalFileStore};
 use crate::events::SwapBytesBehaviour;
-use crate::utils::{self, add_peer_to_store, prompt_for_nickname, ChatState};
+use crate::utils::{self, prompt_for_nickname, ChatState};
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ChatMessage {
+    pub message: String,
+    pub nickname: String
+}
 
 pub async fn handle_input_line(
     swarm: &mut Swarm<SwapBytesBehaviour>,
@@ -27,12 +34,21 @@ pub async fn handle_input_line(
 
     // All inputs without the command prefix should just get sent as messages
     if line.chars().nth(0).unwrap() != '/' {
-        swarm
-            .behaviour_mut()
-            .chat
-            .gossipsub
-            .publish(current_topic, line.as_bytes())
-            .expect("Failed to send message");
+        let message = ChatMessage {
+            message: line,
+            nickname: chat_state.nickname.clone()
+        };
+
+        let message_bytes = serde_cbor::to_vec(&message)?;
+
+        if let Err(e) = swarm
+        .behaviour_mut()
+        .chat
+        .gossipsub
+        .publish(current_topic, message_bytes) {
+            eprintln!("Failed to send message: {}", e);
+        }
+
         return Ok(());
     }
 
@@ -59,19 +75,22 @@ pub async fn handle_input_line(
 
             // If only the command provided, enter prompt loop
             let Some(nickname) = args.get(1) else {
-                prompt_for_nickname(stdin, swarm, chat_state).await;
+                let nickname = prompt_for_nickname(stdin, swarm).await;
+                chat_state.nickname = nickname;
                 return Ok(());
             };
 
             // If given nickname is empty, enter prompt loop
             if nickname.trim().is_empty() {
                 println!("Nickname cannot be empty. Please enter a valid nickname.");
-                prompt_for_nickname(stdin, swarm, chat_state).await;
+                let nickname = prompt_for_nickname(stdin, swarm).await;
+                chat_state.nickname = nickname;
                 return Ok(());
             }
 
-            // Otherwise, set nickname to whatevers given
-            utils::set_nickname(swarm, Some(nickname.clone()), chat_state);
+            let nickname = utils::process_nickname(swarm, nickname);
+            println!("Nickname set to '{}'", nickname);
+            chat_state.nickname = nickname;
 
             Ok(())
         }
@@ -179,7 +198,8 @@ pub async fn handle_input_line(
             let peers: Vec<PeerId> = swarm.connected_peers().cloned().collect();
             for peer_id in peers {
                 let key = kad::RecordKey::new(&format!("file_index::{}", peer_id));
-                swarm.behaviour_mut().kademlia.get_record(key);
+                let queryid = swarm.behaviour_mut().kademlia.get_record(key);
+                chat_state.pending_keys.insert(queryid);
             }
             Ok(())
         }
@@ -209,14 +229,33 @@ pub async fn handle_input_line(
                 println!("Usage: /dm <nickname> <message>");
                 return Ok(());
             }
-            let peer_id_str = args.get(1).expect("Failed to parse peerid");
-            let Ok(peer_id) = PeerId::from_str(&peer_id_str) else {
-                eprintln!("Invalid peerid");
+            let Some(nickname) = args.get(1) else {
+                eprintln!("Failed to parse nickname");
+                return Ok(());
+            };
+            let Some(peer_id_str) = chat_state.nicknames.get_key_from_value(nickname) else {
+                eprintln!("Nickname not found");
+                return Ok(());
+            };
+            let Ok(peerid) = PeerId::from_str(&peer_id_str) else {
+                eprintln!("Failed to parse retrieved nickname");
+                return Ok(());
+            };
+            let Some(message) = args.get(2) else {
+                eprintln!("Failed to parse message");
                 return Ok(());
             };
 
-            let message = args.get(2).expect("Failed to parse message");
-            swarm.behaviour_mut().direct_message.send_request(&peer_id, DirectMessage(message.to_string()));
+            swarm
+                .behaviour_mut()
+                .direct_message
+                .send_request(
+                    &peerid, 
+                    DirectMessage {
+                        message: message.clone(),
+                        sender_nickname: chat_state.nickname.clone()
+                    }
+                );
             
             Ok(())
         }

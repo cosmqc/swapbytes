@@ -1,95 +1,78 @@
 use libp2p::gossipsub::IdentTopic;
-use libp2p::kad::{self, store::MemoryStore};
-use libp2p::PeerId;
+use libp2p::kad;
+use libp2p::{PeerId, Swarm};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
-use std::error::Error;
 use std::io::{stdout, Write};
 use tokio::io;
 
 use crate::events::SwapBytesBehaviour;
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct PeerInfo {
     pub peerid: String,
     pub nickname: String,
 }
 
+pub struct NicknameMap {
+    inner: HashMap<String, String>
+}
+
+impl NicknameMap {
+    pub fn new() -> Self {
+        NicknameMap {
+            inner: HashMap::new(),
+        }
+    }
+
+    pub fn insert(&mut self, key: String, value: String) {
+        self.inner.insert(key, value);
+    }
+
+    pub fn get<'a>(&'a self, key: &'a str) -> &'a str {
+        let poss_value = self.inner.get(key);
+        match poss_value {
+            Some(value) => value,
+            None => key,
+        }
+    }
+
+    pub fn get_key_from_value(&self, value: &str) -> Option<String> {
+        for (key, val) in &self.inner {
+            if *val == value {
+                return Some(key.clone());
+            }
+        }
+        None
+    }
+}
+
 pub struct ChatState {
-    pub pending_messages: HashMap<kad::QueryId, (PeerId, Vec<u8>)>,
-    pub handled_keys: HashSet<String>,
-    pub peer_to_nickname: HashMap<String, String>,
-    pub nickname_to_peer: HashMap<String, String>,
+    pub pending_keys: HashSet<kad::QueryId>,
+    pub nicknames: NicknameMap,
     pub current_topic: IdentTopic,
+    pub nickname: String
 }
 
 impl ChatState {
-    pub fn new() -> ChatState {
+    pub fn new(nickname: String) -> ChatState {
         ChatState {
-            pending_messages: HashMap::new(),
-            handled_keys: HashSet::new(),
-            peer_to_nickname: HashMap::new(),
-            nickname_to_peer: HashMap::new(),
+            pending_keys: HashSet::new(),
+            nicknames: NicknameMap::new(),
             current_topic: IdentTopic::new("chat"),
+            nickname
         }
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct NicknameUpdate {
-    pub peer_id: String,
-    pub nickname: String,
-}
-
-/// Adds a (peerid, nickname) pair to the DHT.  
-pub fn add_peer_to_store(
-    store: &mut kad::Behaviour<MemoryStore>,
-    peerid: PeerId,
-    nickname: String,
-    chat_state: &mut ChatState
-) -> Result<(), Box<dyn Error>> {
-    let peerid = peerid.clone();
-    let nickname = nickname.clone();
-    let peer_info = PeerInfo {
-        peerid: peerid.to_string(),
-        nickname: nickname.clone(),
-    };
-    let peer_info_bytes = serde_cbor::to_vec(&peer_info)?;
-
-    // Save peerid -> data relation
-    let record = kad::Record {
-        key: kad::RecordKey::new(&format!("peer::{}", peerid)),
-        value: peer_info_bytes.clone(),
-        publisher: Some(peerid),
-        expires: None,
-    };
-    store
-        .put_record(record, kad::Quorum::One)
-        .expect("Failed to store peer w peerid key.");
-
-    // Save nickname -> data relation
-    let record = kad::Record {
-        key: kad::RecordKey::new(&format!("peer::{}", nickname)),
-        value: peer_info_bytes.clone(),
-        publisher: Some(peerid),
-        expires: None,
-    };
-    store
-        .put_record(record, kad::Quorum::One)
-        .expect("Failed to store peer w nickname key.");
-
-    chat_state.peer_to_nickname.insert(peerid.to_string(), nickname.clone());
-    chat_state.nickname_to_peer.insert(nickname, peerid.to_string());
-
-    return Ok(());
-}
+pub struct NicknameUpdate(pub String);
 
 /// Prompts the user for a nickname until it gets a valid one, then sets it with a confirmation message
 pub async fn prompt_for_nickname(
     stdin: &mut io::Lines<io::BufReader<io::Stdin>>,
-    swarm: &mut libp2p::Swarm<SwapBytesBehaviour>,
-    chat_state: &mut ChatState
-) {
+    swarm: &mut Swarm<SwapBytesBehaviour>
+) -> String {
     let mut nickname = String::new();
     let mut is_valid = false;
 
@@ -109,40 +92,12 @@ pub async fn prompt_for_nickname(
         }
         
     }
-    let new_nickname = set_nickname(swarm, Some(nickname), chat_state);
-    println!("Nickname set to '{}'", new_nickname)
+    println!("Nickname set to '{}'", nickname);
+    process_nickname(swarm, &nickname)
 }
 
-/// Sets the nickname to the given value and broadcasts it, if no nickname given then just broadcasts the current one
-pub fn set_nickname(swarm: &mut libp2p::Swarm<SwapBytesBehaviour>, nickname: Option<String>, chat_state: &mut ChatState) -> String{
-    let peer_id = swarm.local_peer_id().clone();
-    let new_nickname = if nickname.is_some() {
-        nickname.unwrap() + "." + &peer_id.to_string()[47..]
-    } else {
-        chat_state.peer_to_nickname.get(&peer_id.to_string()).unwrap_or(
-            &"Failed to get own nickname".to_string()
-        ).to_string()
-    };
-
-    let update = NicknameUpdate {
-        peer_id: peer_id.to_string(),
-        nickname: new_nickname.clone(),
-    };
-    
-    let msg = serde_cbor::to_vec(&update).expect("Failed to serialize nickname");
-    let _ = swarm
-        .behaviour_mut()
-        .chat
-        .gossipsub
-        .publish(chat_state.current_topic.clone(), msg);
-
-    // Update kad store so new people can get nicknames on demand
-    add_peer_to_store(
-        &mut swarm.behaviour_mut().kademlia,
-        peer_id,
-        new_nickname.clone(),
-        chat_state
-    ).expect("Couldn't add nickname to store");
-
-    new_nickname
+// Sets the nickname to the given value
+pub fn process_nickname(swarm: &mut libp2p::Swarm<SwapBytesBehaviour>, nickname: &str) -> String {
+    let peerid = swarm.local_peer_id().to_string();
+    nickname.to_owned() + "." + &peerid[47..]
 }

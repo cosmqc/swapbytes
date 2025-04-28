@@ -42,8 +42,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .with_swarm_config(|cfg| cfg.with_idle_connection_timeout(Duration::from_secs(60)))
         .build();
 
+    // Create an input for the user and ask them for their nickname
+    let mut stdin = io::BufReader::new(io::stdin()).lines();
+    let nickname = utils::prompt_for_nickname(&mut stdin, &mut swarm).await;
+
     // Initialize local state trackers
-    let mut chat_state = ChatState::new();
+    let mut chat_state = ChatState::new(nickname);
     let mut file_store = LocalFileStore::new();
 
     // Setup GossipSub
@@ -57,10 +61,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let listen_port = cli.port.unwrap_or("0".to_string());
     let multiaddr = format!("/ip4/0.0.0.0/tcp/{listen_port}");
     swarm.listen_on(multiaddr.parse()?)?;
-
-    // Create an input for the user and ask them for their nickname
-    let mut stdin = io::BufReader::new(io::stdin()).lines();
-    utils::prompt_for_nickname(&mut stdin, &mut swarm, &mut chat_state).await;
 
     println!("Enter chat messages one line at a time:");
 

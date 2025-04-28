@@ -4,9 +4,9 @@ use libp2p::{
 use std::error::Error;
 use libp2p::request_response;
 
-use crate::{events::kad::QueryId, files::{DirectMessage, DirectMessageResponse, LocalFileStore}, utils};
+use crate::{events::kad::QueryId, files::{DirectMessage, AcknowledgeResponse, LocalFileStore}, input::ChatMessage, utils::{self, NicknameUpdate}};
 use crate::files::{FileMetadata, FileRequest, FileResponse};
-use crate::utils::{ChatState, NicknameUpdate, PeerInfo};
+use crate::utils::ChatState;
 
 #[derive(NetworkBehaviour)]
 pub struct ChatBehaviour {
@@ -19,7 +19,8 @@ pub struct SwapBytesBehaviour {
     pub chat: ChatBehaviour,
     pub kademlia: kad::Behaviour<MemoryStore>,
     pub file_transfer: request_response::cbor::Behaviour<FileRequest, FileResponse>,
-    pub direct_message: request_response::cbor::Behaviour<DirectMessage, DirectMessageResponse>
+    pub direct_message: request_response::cbor::Behaviour<DirectMessage, AcknowledgeResponse>,
+    pub nickname_update: request_response::cbor::Behaviour<NicknameUpdate, NicknameUpdate>
 }
 
 /// Setup different sets of behaviour for the app.
@@ -49,6 +50,13 @@ pub fn get_swapbytes_behaviour(key: &Keypair) -> Result<SwapBytesBehaviour, Box<
         direct_message: request_response::cbor::Behaviour::new(
             [(
                 StreamProtocol::new("/direct-message/1"),
+                ProtocolSupport::Full,
+            )],
+            request_response::Config::default(), 
+        ),
+        nickname_update: request_response::cbor::Behaviour::new(
+            [(
+                StreamProtocol::new("/nickname-update/1"),
                 ProtocolSupport::Full,
             )],
             request_response::Config::default(), 
@@ -89,6 +97,11 @@ pub async fn handle_event(
             request_response::Event::Message { peer, connection_id, message, .. },
         )) => handle_direct_message_event(peer, connection_id, message, swarm, chat_state, file_store).await,
 
+        // Nickname updates with request/response pattern
+        SwarmEvent::Behaviour(SwapBytesBehaviourEvent::NicknameUpdate(
+            request_response::Event::Message { peer, message, .. },
+        )) => handle_nickname_event(peer, message, swarm, chat_state).await,
+
         // Default, do nothing
         // default => println!("{default:?}")
         _ => {}
@@ -121,12 +134,6 @@ fn handle_chat_event(
                     .add_address(&peer_id, multiaddr);
 
                 swarm.behaviour_mut().kademlia.get_closest_peers(peer_id.clone());
-
-                // Query for nickname
-                if !chat_state.peer_to_nickname.contains_key(&peer_id.to_string()) {
-                    let key = kad::RecordKey::new(&format!("peer::{}", peer_id));
-                    swarm.behaviour_mut().kademlia.get_record(key);
-                }
             }
         }
 
@@ -148,41 +155,14 @@ fn handle_chat_event(
             message_id: _id,
             message,
         }) => {
-            // Try to interpret the message as a NicknameUpdate
-            if let Ok(update) = serde_cbor::from_slice::<NicknameUpdate>(&message.data) {
-                chat_state
-                    .peer_to_nickname
-                    .insert(update.peer_id.clone(), update.nickname);
-            } else {
-                // If the message is empty, ignore the message
-                if message.data.is_empty() {
-                    return;
-                }
+            // Try to interpret the message as a ChatMessage
+            if let Ok(chat) = serde_cbor::from_slice::<ChatMessage>(&message.data) {
+                chat_state.nicknames.insert(peer_id.to_string(), chat.nickname.clone());
+                println!("{}: {}", chat.nickname, chat.message);
 
-                // Otherwise output the message
-                match chat_state.peer_to_nickname.get(&peer_id.to_string()) {
-                    // If we've got the nickname cached, print that immediately
-                    Some(nickname) => {
-                        println!("{}: {}", nickname, String::from_utf8_lossy(&message.data))
-                    }
-                    // Otherwise, queue it for later
-                    None => {
-                        let key = kad::RecordKey::new(&format!("peer::{}", peer_id));
-                        let query_id = swarm.behaviour_mut().kademlia.get_record(key);
-
-                        chat_state
-                            .pending_messages
-                            .insert(query_id, (peer_id.clone(), message.data.clone()));
-                    }
-                }
             }
-
-            let key = kad::RecordKey::new(&peer_id.to_bytes());
-            let query_id = swarm.behaviour_mut().kademlia.get_record(key);
-
-            // Store callback so it gets printed when the nickname is found
-            chat_state.pending_messages.insert(query_id, (peer_id.clone(), message.data));
         },
+
         // default => println!("{default:?}")
         _ => {}
     }
@@ -198,37 +178,16 @@ fn handle_kad_event(
     match result {
         // Response from DHT request
         kad::QueryResult::GetRecord(Ok(kad::GetRecordOk::FoundRecord(peer_record))) => {
-            // Store callback so it gets printed when the nickname is found
-            println!("{:?}", peer_record);
-            // if let Some(callback) = chat_state.pending_callbacks.call(&id, peer_record.record.);
-
-            // Match on the custom response type (peer, file, file_index, etc)
+            // Match on the custom response type (file, file_index, etc)
             let record_key = String::from_utf8_lossy(peer_record.record.key.as_ref());
             match record_key.as_ref() {
-                // Deferred messages (replies to nickname queries)
-                key if key.starts_with("peer::") => {
-                    if let Some((peer_id, msg)) = chat_state.pending_messages.remove(&id) {
-                        match serde_cbor::from_slice::<PeerInfo>(&peer_record.record.value) {
-                            Ok(peer) => {
-                                // Regardless of if the message exists, update the nickname
-                                chat_state.peer_to_nickname.insert(peer.peerid, peer.nickname.clone());
-                                
-                                if msg.is_empty() {
-                                    return;
-                                }
-
-                                // If not empty, output it like a normal message
-                                println!("{}: {}", peer.nickname, String::from_utf8_lossy(&msg));
-                            }
-                            Err(_) => {
-                                println!("Peer {peer_id}: {}", String::from_utf8_lossy(&msg));
-                            }
-                        }
-                    }
-                }
 
                 // File metadata responses
                 key if key.starts_with("file::") => {
+                    // Deduplicate
+                    if peer_record.peer.is_none() || !chat_state.pending_keys.remove(&id) {
+                        return;
+                    }
                     match serde_cbor::from_slice::<FileMetadata>(&peer_record.record.value) {
                         Ok(metadata) => {
                             println!(
@@ -248,33 +207,32 @@ fn handle_kad_event(
 
                 // Response from a peer saying what files they have.
                 key if key.starts_with("file_index::") => {
-                    // Get sender name
-                    let sender = match peer_record.peer {
-                        Some(peerid) => {
-                            let peerid_str = peerid.to_string();
-                            chat_state
-                                .peer_to_nickname
-                                .get(&peerid_str)
-                                .cloned()
-                                .unwrap_or(peerid_str)
-                        }
-                        None => "Someone".to_string(),
-                    };
+                    // Deduplicate
+                    if peer_record.peer.is_none() || !chat_state.pending_keys.remove(&id) {
+                        return;
+                    }
 
                     // Print a message, then send a request for the metadata of each file listed
                     match serde_cbor::from_slice::<Vec<String>>(&peer_record.record.value) {
                         Ok(hashes) => {
                             let file_count = hashes.len();
+                            let peerid_str = peer_record.peer
+                                .map_or(
+                                    "Someone".to_string(), 
+                                    |peer_id| peer_id.to_string()
+                                );
                             println!(
                                 "{} has uploaded {} file{}:",
-                                sender,
+                                chat_state.nicknames.get(&peerid_str),
                                 file_count,
                                 if file_count == 1 { "" } else { "s" }
                             );
 
                             hashes.iter().for_each(|hash| {
                                 let key = kad::RecordKey::new(&format!("file::{}", hash));
-                                swarm.behaviour_mut().kademlia.get_record(key);
+                                
+                                let queryid = swarm.behaviour_mut().kademlia.get_record(key);
+                                chat_state.pending_keys.insert(queryid);
                             });
                         }
                         Err(e) => {
@@ -288,10 +246,19 @@ fn handle_kad_event(
             }
         }
 
-        // Once bootstrapping is complete, broadcast nickname
+        // Once bootstrapping is complete, fetch nicknames from peers
         kad::QueryResult::Bootstrap(Ok(kad::BootstrapOk { num_remaining, .. })) => {
             if num_remaining == 0 {
-                utils::set_nickname(swarm, None, chat_state);
+                let peers: Vec<PeerId> = swarm.connected_peers().cloned().collect();
+                for peer in peers {
+                    swarm
+                        .behaviour_mut()
+                        .nickname_update
+                        .send_request(
+                            &peer,
+                            NicknameUpdate(chat_state.nickname.clone())
+                        );
+                }
             }
         }
 
@@ -325,7 +292,7 @@ async fn handle_file_transfer_event(
 async fn handle_direct_message_event(
     peer_id: PeerId,
     connection_id: ConnectionId,
-    message: Message<DirectMessage, DirectMessageResponse>,
+    message: Message<DirectMessage, AcknowledgeResponse>,
     swarm: &mut Swarm<SwapBytesBehaviour>,
     chat_state: &mut ChatState,
     file_store: &mut LocalFileStore
@@ -333,18 +300,45 @@ async fn handle_direct_message_event(
     match message {
         Message::Request { request, channel, .. } => {
             // Output DM to user
-            println!("*DM*: {}", request.0);
+            println!("*DM* {}: {}", request.sender_nickname, request.message);
 
             // Send response so request is fulfilled
             swarm.behaviour_mut()
                 .direct_message
                 .send_response(
                     channel,
-                    DirectMessageResponse(true)
+                    AcknowledgeResponse(true)
                 ).expect("Failed to send file response")
         },
 
         // Ignore response messages
         Message::Response { .. } => {}
+    }
+}
+
+
+/// Handles NicknameUpdate requests/responses. 
+async fn handle_nickname_event(
+    peer_id: PeerId,
+    message: Message<NicknameUpdate, NicknameUpdate>,
+    swarm: &mut Swarm<SwapBytesBehaviour>,
+    chat_state: &mut ChatState,
+) {
+    match message {
+        // Someone's updating us with their nickname, and asking for ours.
+        Message::Request { request, channel, .. } => {
+            chat_state.nicknames.insert(peer_id.to_string(), request.0);
+            swarm.behaviour_mut()
+                .nickname_update
+                .send_response(
+                    channel,
+                    NicknameUpdate(chat_state.nickname.clone())
+                ).expect("Failed to send nickname acknowledgement")
+        },
+
+        // A response to our nickname request, save it in the app state
+        Message::Response { response, .. } => {
+            chat_state.nicknames.insert(peer_id.to_string(), response.0);
+        }
     }
 }
