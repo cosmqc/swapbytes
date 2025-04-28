@@ -3,15 +3,13 @@ use libp2p::{
     gossipsub,
     identity::Keypair,
     kad::{self, store::MemoryStore, QueryResult},
-    mdns,
+    mdns, ping, rendezvous,
     request_response::{Message, ProtocolSupport},
     swarm::{NetworkBehaviour, Swarm, SwarmEvent},
     PeerId, StreamProtocol,
-    rendezvous,
-    ping
 };
-use tokio::time::Duration;
 use std::error::Error;
+use tokio::time::Duration;
 
 use crate::files::{FileMetadata, FileResponse};
 use crate::utils::ChatState;
@@ -43,7 +41,7 @@ pub struct SwapBytesBehaviour {
     pub direct_message: request_response::cbor::Behaviour<DirectMessage, AcknowledgeResponse>,
     pub nickname_update: request_response::cbor::Behaviour<NicknameUpdate, NicknameUpdate>,
     pub trade_request: request_response::cbor::Behaviour<TradeRequest, AcknowledgeResponse>,
-    pub rendezvous: RendezvousBehaviour
+    pub rendezvous: RendezvousBehaviour,
 }
 
 /// Setup different sets of behaviour for the app.
@@ -96,7 +94,7 @@ pub fn get_swapbytes_behaviour(key: &Keypair) -> Result<SwapBytesBehaviour, Box<
             )],
             request_response::Config::default(),
         ),
-        rendezvous: rendezvous_behaviour
+        rendezvous: rendezvous_behaviour,
     })
 }
 
@@ -108,11 +106,6 @@ pub async fn handle_event(
     file_store: &mut LocalFileStore,
 ) {
     match event {
-        // Your node has connected to the network
-        SwarmEvent::NewListenAddr { address, .. } => {
-            println!("Your node is listening on {address}")
-        }
-
         // Gossipsub and MDNS (peer discovery and chat)
         SwarmEvent::Behaviour(SwapBytesBehaviourEvent::Chat(event)) => {
             handle_chat_event(swarm, event, chat_state)
@@ -158,11 +151,9 @@ pub async fn handle_event(
                 Some(rendezvous::Namespace::new("rendezvous".to_string()).unwrap()),
                 None,
                 None,
-                chat_state.rendezvous
+                chat_state.rendezvous,
             )
         }
-
-        
 
         // Default, do nothing
         // default => println!("{default:?}")
@@ -180,8 +171,6 @@ fn handle_chat_event(
         // When a new peer is discovered
         ChatBehaviourEvent::Mdns(mdns::Event::Discovered(list)) => {
             for (peer_id, multiaddr) in list {
-                println!("mDNS discovered a new peer: {peer_id}, listening on {multiaddr}");
-
                 // Add peer to gossipsub
                 swarm
                     .behaviour_mut()
@@ -204,8 +193,11 @@ fn handle_chat_event(
 
         // When a peer has left the network
         ChatBehaviourEvent::Mdns(mdns::Event::Expired(list)) => {
-            for (peer_id, multiaddr) in list {
-                println!("mDNS peer has expired: {peer_id}, listening on {multiaddr}");
+            for (peer_id, _) in list {
+                let peer_id_str = peer_id.to_string();
+                let nickname = chat_state.nicknames.get(&peer_id_str);
+                println!("{} has left the network", nickname);
+
                 swarm
                     .behaviour_mut()
                     .chat
@@ -313,6 +305,7 @@ fn handle_kad_event(
         kad::QueryResult::Bootstrap(Ok(kad::BootstrapOk { num_remaining, .. })) => {
             if num_remaining == 0 {
                 let peers: Vec<PeerId> = swarm.connected_peers().cloned().collect();
+                // For each peer, request their nickname
                 for peer in peers {
                     swarm
                         .behaviour_mut()
@@ -339,11 +332,13 @@ async fn handle_direct_message_event(
             println!("*DM* {}: {}", request.sender_nickname, request.message);
 
             // Send response so request is fulfilled
-            swarm
+            if let Err(_) = swarm
                 .behaviour_mut()
                 .direct_message
                 .send_response(channel, AcknowledgeResponse(true))
-                .expect("Failed to send file response")
+            {
+                eprintln!("Failed to send response.")
+            };
         }
 
         // Ignore response messages
@@ -364,11 +359,13 @@ async fn handle_nickname_event(
             request, channel, ..
         } => {
             chat_state.nicknames.insert(peer_id.to_string(), request.0);
-            swarm
+            if let Err(_) = swarm
                 .behaviour_mut()
                 .nickname_update
                 .send_response(channel, NicknameUpdate(chat_state.nickname.clone()))
-                .expect("Failed to send nickname acknowledgement")
+            {
+                eprintln!("Failed to send nickname acknowledgement")
+            }
         }
 
         // A response to our nickname request, save it in the app state
@@ -410,11 +407,13 @@ async fn handle_trade_request_event(
                     request.nickname
                 );
             }
-            swarm
+            if let Err(_) = swarm
                 .behaviour_mut()
                 .trade_request
                 .send_response(channel, AcknowledgeResponse(requested_file_exists))
-                .expect("Failed to send nickname acknowledgement")
+            {
+                eprintln!("Failed to send nickname acknowledgement")
+            }
         }
 
         // A acknowledgement response to our trade request, represents whether the requested file exists
@@ -453,11 +452,13 @@ async fn handle_file_transfer_event(
                     let Some(trade_details) =
                         chat_state.outgoing_trades.remove(&peer_id.to_string())
                     else {
-                        swarm
+                        if let Err(_) = swarm
                             .behaviour_mut()
                             .file_transfer
                             .send_response(channel, None)
-                            .expect("Failed to send file response");
+                        {
+                            eprintln!("Failed to send file response");
+                        }
                         return;
                     };
 
@@ -479,11 +480,13 @@ async fn handle_file_transfer_event(
                         file: file_bytes,
                         metadata: trade_details.offered_file,
                     };
-                    swarm
+                    if let Err(_) = swarm
                         .behaviour_mut()
                         .file_transfer
                         .send_response(channel, Some(response))
-                        .expect("Failed to send file response");
+                    {
+                        eprintln!("Failed to send file response");
+                    }
 
                     println!("Trade successful!")
                 }

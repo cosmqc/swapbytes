@@ -1,8 +1,4 @@
-use libp2p::gossipsub::IdentTopic;
-use libp2p::kad;
-use libp2p::Multiaddr;
-use libp2p::PeerId;
-use libp2p::Swarm;
+use libp2p::{gossipsub::IdentTopic, kad, PeerId, Swarm};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::io::{stdout, Write};
@@ -18,7 +14,7 @@ pub struct PeerInfo {
 }
 
 pub struct NicknameMap {
-    inner: HashMap<String, String>
+    inner: HashMap<String, String>,
 }
 
 impl NicknameMap {
@@ -64,7 +60,7 @@ pub struct ChatState {
     pub incoming_trades: HashMap<String, TradeRequest>,
     pub outgoing_trades: HashMap<String, TradeRequest>,
     pub nickname: String,
-    pub rendezvous: PeerId
+    pub rendezvous: PeerId,
 }
 
 impl ChatState {
@@ -76,7 +72,9 @@ impl ChatState {
             incoming_trades: HashMap::new(),
             outgoing_trades: HashMap::new(),
             nickname,
-            rendezvous: "12D3KooWDpJ7As7BWAwRMfu1VU2WCqNjvq387JEYKDBj4kx6nXTN".parse::<PeerId>().unwrap()
+            rendezvous: "12D3KooWDpJ7As7BWAwRMfu1VU2WCqNjvq387JEYKDBj4kx6nXTN"
+                .parse::<PeerId>()
+                .unwrap(),
         }
     }
 }
@@ -87,7 +85,7 @@ pub struct NicknameUpdate(pub String);
 /// Prompts the user for a nickname until it gets a valid one, then sets it with a confirmation message
 pub async fn prompt_for_nickname(
     stdin: &mut io::Lines<io::BufReader<io::Stdin>>,
-    swarm: &mut Swarm<SwapBytesBehaviour>
+    swarm: &mut Swarm<SwapBytesBehaviour>,
 ) -> String {
     let mut nickname = String::new();
     let mut is_valid = false;
@@ -106,14 +104,13 @@ pub async fn prompt_for_nickname(
             Ok(None) => println!("No input received. Please try again."),
             Err(e) => println!("Error reading input: {e}. Please try again."),
         }
-        
     }
     let new_nickname = process_nickname(swarm, &nickname);
     println!("Nickname set to '{}'", new_nickname);
     new_nickname
 }
 
-// Sets the nickname to the given value
+/// Sets the nickname to the given value
 pub fn process_nickname(swarm: &mut libp2p::Swarm<SwapBytesBehaviour>, nickname: &str) -> String {
     let peerid = swarm.local_peer_id().to_string();
     nickname.to_owned() + "." + &peerid[47..]

@@ -1,23 +1,17 @@
-use libp2p::gossipsub::IdentTopic;
-use libp2p::kad;
-use libp2p::swarm::Swarm;
-use libp2p::PeerId;
+use libp2p::{gossipsub::IdentTopic, kad, swarm::Swarm, PeerId};
 use regex::Regex;
-use std::error::Error;
-use std::fs;
-use std::path::Path;
-use std::str::FromStr;
-use tokio::io::{BufReader, Lines, Stdin};
 use serde::{Deserialize, Serialize};
+use std::{fs, error::Error, path::Path, str::FromStr};
+use tokio::io::{BufReader, Lines, Stdin};
 
-use crate::files::{DirectMessage, FileResponse, LocalFileStore};
 use crate::events::SwapBytesBehaviour;
+use crate::files::{DirectMessage, FileResponse, LocalFileStore};
 use crate::utils::{self, prompt_for_nickname, ChatState, TradeRequest};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ChatMessage {
     pub message: String,
-    pub nickname: String
+    pub nickname: String,
 }
 
 pub async fn handle_input_line(
@@ -36,16 +30,17 @@ pub async fn handle_input_line(
     if line.chars().nth(0).unwrap() != '/' {
         let message = ChatMessage {
             message: line,
-            nickname: chat_state.nickname.clone()
+            nickname: chat_state.nickname.clone(),
         };
 
         let message_bytes = serde_cbor::to_vec(&message)?;
 
         if let Err(e) = swarm
-        .behaviour_mut()
-        .chat
-        .gossipsub
-        .publish(current_topic, message_bytes) {
+            .behaviour_mut()
+            .chat
+            .gossipsub
+            .publish(current_topic, message_bytes)
+        {
             eprintln!("Failed to send message: {}", e);
         }
 
@@ -125,18 +120,13 @@ pub async fn handle_input_line(
                     return Ok(());
                 }
             };
-            
+
             // Get description if it exists
             let description = args.get(2).cloned();
 
             // Share file metadata to peers
             let peer_id = swarm.local_peer_id().clone();
-            let hash = file_store.add_file(
-                file_bytes, 
-                filename, 
-                &peer_id,
-                description
-            );
+            let hash = file_store.add_file(file_bytes, filename, &peer_id, description);
             if let Some(metadata) = file_store.get_metadata(&hash) {
                 if let Ok(serialized) = serde_cbor::to_vec(metadata) {
                     let record = kad::Record {
@@ -145,7 +135,7 @@ pub async fn handle_input_line(
                         publisher: Some(peer_id),
                         expires: None,
                     };
-            
+
                     if let Err(e) = swarm
                         .behaviour_mut()
                         .kademlia
@@ -153,7 +143,10 @@ pub async fn handle_input_line(
                     {
                         println!("Error publishing metadata: {e}");
                     } else {
-                        println!("Uploaded and shared metadata for file {} with hash {}", filename, hash);
+                        println!(
+                            "Uploaded and shared metadata for file {} with hash {}",
+                            filename, hash
+                        );
                     }
                 } else {
                     println!("Error serializing metadata");
@@ -170,11 +163,13 @@ pub async fn handle_input_line(
                 expires: None,
             };
 
-            swarm
+            if let Err(_) = swarm
                 .behaviour_mut()
                 .kademlia
                 .put_record(record, kad::Quorum::One)
-                .expect("Failed to update file list");
+            {
+                eprintln!("Failed to update file list");
+            }
 
             Ok(())
         }
@@ -209,11 +204,14 @@ pub async fn handle_input_line(
                 return Ok(());
             };
 
-            // If users aren't trading together, they shouldn't be able to DM each other 
-            if !chat_state.incoming_trades.contains_key(&peer_id_str) &&
-                !chat_state.outgoing_trades.contains_key(&peer_id_str) {
-                    eprintln!("You can only DM someone while a trade request is open. Open one with /trade")
-                }
+            // If users aren't trading together, they shouldn't be able to DM each other
+            if !chat_state.incoming_trades.contains_key(&peer_id_str)
+                && !chat_state.outgoing_trades.contains_key(&peer_id_str)
+            {
+                eprintln!(
+                    "You can only DM someone while a trade request is open. Open one with /trade"
+                )
+            }
 
             // Parse message
             let Some(message) = args.get(2) else {
@@ -221,17 +219,14 @@ pub async fn handle_input_line(
                 return Ok(());
             };
 
-            swarm
-                .behaviour_mut()
-                .direct_message
-                .send_request(
-                    &peerid, 
-                    DirectMessage {
-                        message: message.clone(),
-                        sender_nickname: chat_state.nickname.clone()
-                    }
-                );
-            
+            swarm.behaviour_mut().direct_message.send_request(
+                &peerid,
+                DirectMessage {
+                    message: message.clone(),
+                    sender_nickname: chat_state.nickname.clone(),
+                },
+            );
+
             Ok(())
         }
 
@@ -260,7 +255,10 @@ pub async fn handle_input_line(
                 return Ok(());
             };
             if chat_state.outgoing_trades.contains_key(&peer_id_str) {
-                eprintln!("You already have a open trade request with {}. Be patient.", nickname);
+                eprintln!(
+                    "You already have a open trade request with {}. Be patient.",
+                    nickname
+                );
                 return Ok(());
             };
 
@@ -286,15 +284,21 @@ pub async fn handle_input_line(
             let trade = TradeRequest {
                 offered_file: offered_file.clone(),
                 requested_file: requested_hash.clone(),
-                nickname: chat_state.nickname.clone()
+                nickname: chat_state.nickname.clone(),
             };
 
-            chat_state.outgoing_trades.insert(peerid.to_string(), trade.clone());
-            swarm.behaviour_mut()
+            chat_state
+                .outgoing_trades
+                .insert(peerid.to_string(), trade.clone());
+            swarm
+                .behaviour_mut()
                 .trade_request
-                .send_request(&peerid,trade);
+                .send_request(&peerid, trade);
 
-            println!("Trade request sent to {}, transfer will happen once they accept", nickname);
+            println!(
+                "Trade request sent to {}, transfer will happen once they accept",
+                nickname
+            );
 
             Ok(())
         }
@@ -336,12 +340,15 @@ pub async fn handle_input_line(
                 return Ok(());
             };
 
-            let response = FileResponse{
+            let response = FileResponse {
                 file: requested_file,
-                metadata: metadata.clone()
+                metadata: metadata.clone(),
             };
 
-            swarm.behaviour_mut().file_transfer.send_request(&peerid, Some(response));
+            swarm
+                .behaviour_mut()
+                .file_transfer
+                .send_request(&peerid, Some(response));
 
             Ok(())
         }
@@ -366,7 +373,11 @@ pub async fn handle_input_line(
                 return Ok(());
             };
 
-            if chat_state.incoming_trades.get(&peerid.to_string()).is_none() {
+            if chat_state
+                .incoming_trades
+                .get(&peerid.to_string())
+                .is_none()
+            {
                 eprintln!("You don't have a trade request from this user");
                 return Ok(());
             };
@@ -375,9 +386,26 @@ pub async fn handle_input_line(
             chat_state.incoming_trades.remove(&peer_id_str);
 
             // Send the 'decline' request
-            swarm.behaviour_mut().file_transfer.send_request(&peerid, None);
+            swarm
+                .behaviour_mut()
+                .file_transfer
+                .send_request(&peerid, None);
             println!("Trade request declined");
 
+            Ok(())
+        }
+
+        "list_peers" => {
+            let peers: Vec<PeerId> = swarm.connected_peers().cloned().collect();
+            match peers.len() {
+                0 => println!("There are no connected peers."),
+                1 => println!("There is 1 connected peer:"),
+                n => println!("There are {} connected peers:", n),
+            }
+
+            for peer_id in peers {
+                println!(" - {}", chat_state.nicknames.get(&peer_id.to_string()))
+            }
             Ok(())
         }
 

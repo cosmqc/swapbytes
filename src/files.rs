@@ -3,22 +3,21 @@ use libp2p::PeerId;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{collections::HashMap, path::Path};
-use tokio::fs::{self, File};
-use tokio::io::AsyncWriteExt;
+use tokio::{fs, fs::File, io::AsyncWriteExt};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DirectMessage {
     pub sender_nickname: String,
-    pub message: String
+    pub message: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AcknowledgeResponse (pub bool);
+pub struct AcknowledgeResponse(pub bool);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileResponse {
     pub file: Vec<u8>,
-    pub metadata: FileMetadata
+    pub metadata: FileMetadata,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -51,7 +50,7 @@ impl LocalFileStore {
         file_bytes: Vec<u8>,
         filename: &str,
         peer_id: &PeerId,
-        description: Option<String>
+        description: Option<String>,
     ) -> String {
         let hash = compute_hash(&file_bytes);
 
@@ -75,7 +74,7 @@ impl LocalFileStore {
     }
 
     /// Returns a set of all the file hashes (used as an identifier)
-    /// This acts as a list of the files we have, and they can request metadata from them 
+    /// This acts as a list of the files we have, and they can request metadata from them
     pub fn all_hashes(&self) -> Vec<String> {
         self.files.keys().cloned().collect()
     }
@@ -89,7 +88,7 @@ impl LocalFileStore {
     pub fn contains_file(&self, hash: &str) -> bool {
         self.files.contains_key(hash)
     }
-}   
+}
 
 /// Generate a SHA256 hash of a given byte array (file), truncate to 8 chars
 pub fn compute_hash(data: &[u8]) -> String {
@@ -99,7 +98,10 @@ pub fn compute_hash(data: &[u8]) -> String {
 }
 
 /// Saves a Vec<u8> to `traded_files/filename`, creating the folder if needed
-pub async fn save_file_to_filesystem(data: Vec<u8>, filename: &str) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn save_file_to_filesystem(
+    data: Vec<u8>,
+    filename: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
     let dir_path = Path::new("traded_files");
 
     // Create the directory if it doesn't exist

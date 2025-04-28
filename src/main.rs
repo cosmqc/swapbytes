@@ -5,16 +5,14 @@ mod utils;
 
 use files::LocalFileStore;
 use futures::StreamExt;
-use libp2p::{rendezvous, PeerId};
-use libp2p::{kad::Mode, noise, tcp, yamux, Multiaddr};
-use tokio::time::MissedTickBehavior;
+use libp2p::{kad::Mode, noise, rendezvous, tcp, yamux, Multiaddr};
 use std::{error::Error, time::Duration};
 use tokio::io::{self, AsyncBufReadExt};
+use tokio::time::MissedTickBehavior;
+use clap::Parser;
 
 use crate::events::get_swapbytes_behaviour;
 use crate::utils::ChatState;
-
-use clap::Parser;
 
 #[derive(Parser, Debug)]
 #[clap(name = "swapbytes")]
@@ -62,21 +60,23 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     // Rendezvous server schenanigans
     let rendezvous_addr = cli.rendezvous.unwrap_or("127.0.0.1".to_string());
-    let rendezvous_point_address = format!("/ip4/{}/tcp/62649", rendezvous_addr).parse::<Multiaddr>().unwrap();
+    let rendezvous_point_address = format!("/ip4/{}/tcp/62649", rendezvous_addr)
+        .parse::<Multiaddr>()
+        .unwrap();
 
-    let external_address = format!("/ip4/{}/tcp/0", rendezvous_addr).parse::<Multiaddr>().unwrap();
+    let external_address = format!("/ip4/{}/tcp/0", rendezvous_addr)
+        .parse::<Multiaddr>()
+        .unwrap();
     swarm.add_external_address(external_address);
     swarm.dial(rendezvous_point_address.clone()).unwrap();
-        
+
     let listen_port = cli.port.unwrap_or("0".to_string());
     let multiaddr = format!("/ip4/0.0.0.0/tcp/{listen_port}");
     swarm.listen_on(multiaddr.parse()?)?;
 
-    // Discovery ping goes off every 30 seconds 
+    // Discovery ping goes off every 30 seconds
     let mut discover_tick = tokio::time::interval(Duration::from_secs(30));
     discover_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
-
-    println!("Enter chat messages one line at a time:");
 
     // Main loop
     loop {
