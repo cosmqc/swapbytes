@@ -53,11 +53,39 @@ pub async fn handle_input_line(
         println!("No command given");
         return Ok(());
     };
-
+    println!();
     // Match on the command given
     match cmd.to_lowercase().as_str() {
         "help" => {
-            println!("So you want help? *mr krabs playing the worlds smallest violin*");
+            println!("/help");
+            println!("\tShow this help message.");
+        
+            println!("/nick <nickname>");
+            println!("\tChange your nickname.");
+        
+            println!("/list_peers");
+            println!("\tList all the peers currently on the network.");
+        
+            println!("/upload <filename>");
+            println!("\tUpload a file to the application. This will share the name of the file, its size, and other metadata, but not the actual file. You are given a hash when you upload a file that you use to identify it.");
+        
+            println!("/list_files");
+            println!("\tShow a list of all the files that have been uploaded, grouped by the uploader.");
+        
+            println!("/dm <nickname> <message>");
+            println!("\tIn the middle of a trade, you can DM the other trader to discuss private details about the trade.");
+        
+            println!("/trade <nickname> <your_file_hash> <their_file_hash>");
+            println!("\tSend a trade offer that the other trader can accept or decline. Use /list_files to find other people's file hashes.");
+        
+            println!("/trade_accept");
+            println!("\tAccept a trade offer. The files will transfer immediately.");
+        
+            println!("/trade_decline");
+            println!("\tDecline a trade offer.");
+        
+            println!();
+
             Ok(())
         }
 
