@@ -3,7 +3,7 @@ use libp2p::PeerId;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{collections::HashMap, path::Path};
-use tokio::{fs::{self, File}, io};
+use tokio::fs::{self, File};
 use tokio::io::AsyncWriteExt;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -91,11 +91,11 @@ impl LocalFileStore {
     }
 }   
 
-/// Generate a SHA256 hash of a given byte array (file)
+/// Generate a SHA256 hash of a given byte array (file), truncate to 8 chars
 pub fn compute_hash(data: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(data);
-    hex::encode(hasher.finalize())
+    hex::encode(hasher.finalize())[..8].to_string()
 }
 
 /// Saves a Vec<u8> to `traded_files/filename`, creating the folder if needed

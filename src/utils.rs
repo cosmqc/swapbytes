@@ -1,9 +1,10 @@
 use libp2p::gossipsub::IdentTopic;
 use libp2p::kad;
-use libp2p::{PeerId, Swarm};
+use libp2p::Multiaddr;
+use libp2p::PeerId;
+use libp2p::Swarm;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
-use std::fs::File;
 use std::io::{stdout, Write};
 use tokio::io;
 
@@ -62,7 +63,8 @@ pub struct ChatState {
     pub current_topic: IdentTopic,
     pub incoming_trades: HashMap<String, TradeRequest>,
     pub outgoing_trades: HashMap<String, TradeRequest>,
-    pub nickname: String
+    pub nickname: String,
+    pub rendezvous: PeerId
 }
 
 impl ChatState {
@@ -73,7 +75,8 @@ impl ChatState {
             current_topic: IdentTopic::new("chat"),
             incoming_trades: HashMap::new(),
             outgoing_trades: HashMap::new(),
-            nickname
+            nickname,
+            rendezvous: "12D3KooWDpJ7As7BWAwRMfu1VU2WCqNjvq387JEYKDBj4kx6nXTN".parse::<PeerId>().unwrap()
         }
     }
 }

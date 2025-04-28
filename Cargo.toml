@@ -19,4 +19,4 @@ clap = { version = "4.5.32", features = ["derive"] }
 
 [dependencies.libp2p]
 version = "0.55"
-features = ["tokio", "noise", "macros", "tcp", "quic", "yamux", "cbor", "request-response", "gossipsub", "mdns", "kad"]
+features = ["tokio", "noise", "macros", "tcp", "quic", "yamux", "cbor", "request-response", "gossipsub", "mdns", "kad", "rendezvous", "ping"]

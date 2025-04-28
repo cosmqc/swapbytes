@@ -179,32 +179,18 @@ pub async fn handle_input_line(
             Ok(())
         }
 
-        // "get_file_metadata" => {
-        //     if args.len() < 2 || args[1].len() == 0 {
-        //         println!("Usage: /get_file_metadata <file_hash>");
-        //         return Ok(());
-        //     }
-
-        //     let file_hash = args[1].clone();
-
-        //     // Query the DHT for the file metadata
-        //     let key = kad::RecordKey::new(&format!("file::{}", file_hash));
-        //     swarm.behaviour_mut().kademlia.get_record(key.clone());
-
-        //     Ok(())
-        // }
-
-        // "list_files" => {
-        //     let peers: Vec<PeerId> = swarm.connected_peers().cloned().collect();
-        //     for peer_id in peers {
-        //         let key = kad::RecordKey::new(&format!("file_index::{}", peer_id));
-        //         let queryid = swarm.behaviour_mut().kademlia.get_record(key);
-        //         chat_state.pending_keys.insert(queryid);
-        //     }
-        //     Ok(())
-        // }
+        "list_files" => {
+            let peers: Vec<PeerId> = swarm.connected_peers().cloned().collect();
+            for peer_id in peers {
+                let key = kad::RecordKey::new(&format!("file_index::{}", peer_id));
+                let queryid = swarm.behaviour_mut().kademlia.get_record(key);
+                chat_state.pending_keys.insert(queryid);
+            }
+            Ok(())
+        }
 
         "dm" => {
+            // Parse nickname
             if args.len() != 3 {
                 println!("Usage: /dm <nickname> <message>");
                 return Ok(());
@@ -217,10 +203,19 @@ pub async fn handle_input_line(
                 eprintln!("Nickname not found");
                 return Ok(());
             };
+
             let Ok(peerid) = PeerId::from_str(&peer_id_str) else {
                 eprintln!("Failed to parse retrieved nickname");
                 return Ok(());
             };
+
+            // If users aren't trading together, they shouldn't be able to DM each other 
+            if !chat_state.incoming_trades.contains_key(&peer_id_str) &&
+                !chat_state.outgoing_trades.contains_key(&peer_id_str) {
+                    eprintln!("You can only DM someone while a trade request is open. Open one with /trade")
+                }
+
+            // Parse message
             let Some(message) = args.get(2) else {
                 eprintln!("Failed to parse message");
                 return Ok(());
@@ -256,6 +251,16 @@ pub async fn handle_input_line(
             };
             let Ok(peerid) = PeerId::from_str(&peer_id_str) else {
                 eprintln!("Failed to parse retrieved nickname");
+                return Ok(());
+            };
+
+            // Users shouldn't be able to have multiple trade requests with the same user
+            if chat_state.incoming_trades.contains_key(&peer_id_str) {
+                eprintln!("You already have a open trade request with {}. Accept or decline their request first.", nickname);
+                return Ok(());
+            };
+            if chat_state.outgoing_trades.contains_key(&peer_id_str) {
+                eprintln!("You already have a open trade request with {}. Be patient.", nickname);
                 return Ok(());
             };
 
@@ -336,7 +341,42 @@ pub async fn handle_input_line(
                 metadata: metadata.clone()
             };
 
-            swarm.behaviour_mut().file_transfer.send_request(&peerid, response);
+            swarm.behaviour_mut().file_transfer.send_request(&peerid, Some(response));
+
+            Ok(())
+        }
+
+        "trade_decline" => {
+            if args.len() != 2 {
+                println!("Usage: /trade_decline <nickname>");
+                return Ok(());
+            }
+
+            // Process nickname
+            let Some(nickname) = args.get(1) else {
+                eprintln!("Failed to parse nickname");
+                return Ok(());
+            };
+            let Some(peer_id_str) = chat_state.nicknames.get_key_from_value(nickname) else {
+                eprintln!("Nickname not found");
+                return Ok(());
+            };
+            let Ok(peerid) = PeerId::from_str(&peer_id_str) else {
+                eprintln!("Failed to parse retrieved nickname");
+                return Ok(());
+            };
+
+            if chat_state.incoming_trades.get(&peerid.to_string()).is_none() {
+                eprintln!("You don't have a trade request from this user");
+                return Ok(());
+            };
+
+            // Remove trade request from application state
+            chat_state.incoming_trades.remove(&peer_id_str);
+
+            // Send the 'decline' request
+            swarm.behaviour_mut().file_transfer.send_request(&peerid, None);
+            println!("Trade request declined");
 
             Ok(())
         }

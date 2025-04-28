@@ -5,7 +5,9 @@ mod utils;
 
 use files::LocalFileStore;
 use futures::StreamExt;
+use libp2p::{rendezvous, PeerId};
 use libp2p::{kad::Mode, noise, tcp, yamux, Multiaddr};
+use tokio::time::MissedTickBehavior;
 use std::{error::Error, time::Duration};
 use tokio::io::{self, AsyncBufReadExt};
 
@@ -21,7 +23,7 @@ struct Cli {
     port: Option<String>,
 
     #[arg(long)]
-    peer: Option<Multiaddr>,
+    rendezvous: Option<String>,
 }
 
 #[tokio::main]
@@ -58,9 +60,21 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .subscribe(&chat_state.current_topic.clone())?;
     swarm.behaviour_mut().kademlia.set_mode(Some(Mode::Server));
 
+    // Rendezvous server schenanigans
+    let rendezvous_addr = cli.rendezvous.unwrap_or("127.0.0.1".to_string());
+    let rendezvous_point_address = format!("/ip4/{}/tcp/62649", rendezvous_addr).parse::<Multiaddr>().unwrap();
+
+    let external_address = format!("/ip4/{}/tcp/0", rendezvous_addr).parse::<Multiaddr>().unwrap();
+    swarm.add_external_address(external_address);
+    swarm.dial(rendezvous_point_address.clone()).unwrap();
+        
     let listen_port = cli.port.unwrap_or("0".to_string());
     let multiaddr = format!("/ip4/0.0.0.0/tcp/{listen_port}");
     swarm.listen_on(multiaddr.parse()?)?;
+
+    // Discovery ping goes off every 30 seconds 
+    let mut discover_tick = tokio::time::interval(Duration::from_secs(30));
+    discover_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
     println!("Enter chat messages one line at a time:");
 
@@ -79,7 +93,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 ).await?,
 
             // Catch events and handle them
-            event = swarm.select_next_some() => events::handle_event(&mut swarm, event, &mut chat_state, &mut file_store).await
+            event = swarm.select_next_some() => events::handle_event(&mut swarm, event, &mut chat_state, &mut file_store).await,
+
+            // If discovery tick, try to discover new peers
+            _ = discover_tick.tick() =>
+            swarm.behaviour_mut().rendezvous.rendezvous.discover(
+                Some(rendezvous::Namespace::new("rendezvous".to_string()).unwrap()),
+                None,
+                None,
+                chat_state.rendezvous
+            )
         }
     }
 }
