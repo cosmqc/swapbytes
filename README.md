@@ -33,7 +33,12 @@ cargo run -- --port 9999 --rendezvous 10.0.0.1
 ### Enter your nickname
 When the app starts up, you will be asked for a nickname to identify yourself. You can always change it later using the `/nick` command
 
+### Chatting
+Any messages not prefixed by a forward slash (/) will be sent as messages. Make sure to say hello when you join!
+
 ### Commands
+Any messages prefixed by a forward slash (/) will be sent as commands. The set of commands is below.
+
 Any multiword arguments should be wrapped in double quotes. For example:
 ```bash
 /nick "lebron james"
