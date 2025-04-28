@@ -79,8 +79,13 @@ impl LocalFileStore {
     }
 
     /// Get a file from local storage, wrap in Option
-    pub fn get_file(&self, hash: String) -> Option<Vec<u8>> {
-        self.files.get(&hash).cloned()
+    pub fn get_file(&self, hash: &str) -> Option<Vec<u8>> {
+        self.files.get(hash).cloned()
+    }
+
+    /// Check if the file store includes a given file
+    pub fn contains_file(&self, hash: &str) -> bool {
+        self.files.contains_key(hash)
     }
 }   
 

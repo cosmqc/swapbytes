@@ -4,7 +4,7 @@ use libp2p::{
 use std::error::Error;
 use libp2p::request_response;
 
-use crate::{events::kad::QueryId, files::{DirectMessage, AcknowledgeResponse, LocalFileStore}, input::ChatMessage, utils::{self, NicknameUpdate}};
+use crate::{events::kad::QueryId, files::{AcknowledgeResponse, DirectMessage, LocalFileStore}, input::ChatMessage, utils::{self, NicknameUpdate, TradeRequest}};
 use crate::files::{FileMetadata, FileRequest, FileResponse};
 use crate::utils::ChatState;
 
@@ -20,7 +20,8 @@ pub struct SwapBytesBehaviour {
     pub kademlia: kad::Behaviour<MemoryStore>,
     pub file_transfer: request_response::cbor::Behaviour<FileRequest, FileResponse>,
     pub direct_message: request_response::cbor::Behaviour<DirectMessage, AcknowledgeResponse>,
-    pub nickname_update: request_response::cbor::Behaviour<NicknameUpdate, NicknameUpdate>
+    pub nickname_update: request_response::cbor::Behaviour<NicknameUpdate, NicknameUpdate>,
+    pub trade_request: request_response::cbor::Behaviour<TradeRequest, AcknowledgeResponse>
 }
 
 /// Setup different sets of behaviour for the app.
@@ -60,6 +61,13 @@ pub fn get_swapbytes_behaviour(key: &Keypair) -> Result<SwapBytesBehaviour, Box<
                 ProtocolSupport::Full,
             )],
             request_response::Config::default(), 
+        ),
+        trade_request: request_response::cbor::Behaviour::new(
+            [(
+                StreamProtocol::new("/trade-request/1"),
+                ProtocolSupport::Full,
+            )],
+            request_response::Config::default(), 
         )
     })
 }
@@ -82,7 +90,7 @@ pub async fn handle_event(
             event
         )) => handle_chat_event(swarm, event, chat_state),
 
-        // Kad events (any data thats supposed to be public, nicknames, file metadata)
+        // Kad events (any data thats supposed to be public, file metadata at the moment)
         SwarmEvent::Behaviour(SwapBytesBehaviourEvent::Kademlia(
             kad::Event::OutboundQueryProgressed { id, result, .. },
         )) => handle_kad_event(id, swarm, result, chat_state),
@@ -101,6 +109,11 @@ pub async fn handle_event(
         SwarmEvent::Behaviour(SwapBytesBehaviourEvent::NicknameUpdate(
             request_response::Event::Message { peer, message, .. },
         )) => handle_nickname_event(peer, message, swarm, chat_state).await,
+
+        // Async Trade requests with request/response pattern
+        SwarmEvent::Behaviour(SwapBytesBehaviourEvent::TradeRequest(
+            request_response::Event::Message { peer, message, .. },
+        )) => handle_trade_request_event(peer, message, swarm, chat_state, file_store).await,
 
         // Default, do nothing
         // default => println!("{default:?}")
@@ -279,7 +292,7 @@ async fn handle_file_transfer_event(
         Message::Request { request, channel, .. } => {
             println!("request {:?}", request);
             let fileid = request.0;
-            let file_bytes = file_store.get_file(fileid).unwrap_or_default();
+            let file_bytes = file_store.get_file(&fileid).unwrap_or_default();
             swarm.behaviour_mut().file_transfer.send_response(channel, FileResponse(file_bytes))
                 .expect("Failed to send file response");
         }
@@ -339,6 +352,52 @@ async fn handle_nickname_event(
         // A response to our nickname request, save it in the app state
         Message::Response { response, .. } => {
             chat_state.nicknames.insert(peer_id.to_string(), response.0);
+        }
+    }
+}
+
+/// Handles trade requests/responses. Handling is async so users aren't blocked during a request
+async fn handle_trade_request_event(
+    peer_id: PeerId,
+    message: Message<TradeRequest, AcknowledgeResponse>,
+    swarm: &mut Swarm<SwapBytesBehaviour>,
+    chat_state: &mut ChatState,
+    file_store: &mut LocalFileStore
+) {
+    match message {
+        // Someone's asking to trade files with us, and asking for ours.
+        Message::Request { request, channel, .. } => {
+            let requested_file_exists = file_store.contains_file(&request.requested_file);
+            if requested_file_exists {
+                let requested_file = file_store.get_metadata(&request.requested_file).unwrap();
+                println!(
+                    "{} would like to trade '{}' for their '{}'{}. Type /trade_accept to confirm trade.",
+                    request.nickname,
+                    requested_file.filename,
+                    request.offered_file.filename,
+                    request.offered_file.description
+                        .as_ref()
+                        .map(|desc| format!(" ({})", desc))
+                        .unwrap_or_default()
+                );
+            }
+            swarm.behaviour_mut()
+                .trade_request
+                .send_response(channel,AcknowledgeResponse(requested_file_exists))
+                .expect("Failed to send nickname acknowledgement")
+        },
+
+        // A acknowledgement response to our trade request, represents whether the requested file exists
+        Message::Response { response, .. } => {
+            match response {
+                // Other user acknowledged the trade request, they have the file but are deciding
+                AcknowledgeResponse(true) => {},
+                // Other user doesn't have the file, tell user and forget about it
+                AcknowledgeResponse(false) => {
+                    chat_state.outgoing_trades.remove(&peer_id.to_string());
+                    eprintln!("{} does not have the requested file", chat_state.nicknames.get(&peer_id.to_string()))
+                }
+            };
         }
     }
 }

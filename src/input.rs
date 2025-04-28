@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::files::{DirectMessage, FileRequest, LocalFileStore};
 use crate::events::SwapBytesBehaviour;
-use crate::utils::{self, prompt_for_nickname, ChatState};
+use crate::utils::{self, prompt_for_nickname, ChatState, TradeRequest};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ChatMessage {
@@ -256,6 +256,60 @@ pub async fn handle_input_line(
                         sender_nickname: chat_state.nickname.clone()
                     }
                 );
+            
+            Ok(())
+        }
+
+        "trade" => {
+            if args.len() != 4 {
+                println!("Usage: /trade <nickname> <offered_file_hash> <requested_file_hash>");
+                return Ok(());
+            }
+            // Process nickname
+            let Some(nickname) = args.get(1) else {
+                eprintln!("Failed to parse nickname");
+                return Ok(());
+            };
+            let Some(peer_id_str) = chat_state.nicknames.get_key_from_value(nickname) else {
+                eprintln!("Nickname not found");
+                return Ok(());
+            };
+            let Ok(peerid) = PeerId::from_str(&peer_id_str) else {
+                eprintln!("Failed to parse retrieved nickname");
+                return Ok(());
+            };
+
+            // Process offered file hash
+            let Some(offered_hash) = args.get(2) else {
+                eprintln!("Failed to parse file hash of the offered file");
+                return Ok(());
+            };
+
+            // Make sure the file the user is offering exists
+            let Some(offered_file) = file_store.get_metadata(offered_hash) else {
+                eprintln!("Offered file does not exist");
+                return Ok(());
+            };
+
+            // Process requested file hash
+            let Some(requested_hash) = args.get(3) else {
+                eprintln!("Failed to parse file hash of the requested file");
+                return Ok(());
+            };
+
+            // Create the request and send it
+            let trade = TradeRequest {
+                offered_file: offered_file.clone(),
+                requested_file: requested_hash.clone(),
+                nickname: chat_state.nickname.clone()
+            };
+
+            chat_state.outgoing_trades.insert(peerid.to_string(), trade.clone());
+            swarm.behaviour_mut()
+                .trade_request
+                .send_request(&peerid,trade);
+
+            println!("Trade request sent to {}, transfer will happen once they accept", nickname);
             
             Ok(())
         }

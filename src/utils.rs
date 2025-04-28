@@ -3,10 +3,12 @@ use libp2p::kad;
 use libp2p::{PeerId, Swarm};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
+use std::fs::File;
 use std::io::{stdout, Write};
 use tokio::io;
 
 use crate::events::SwapBytesBehaviour;
+use crate::files::FileMetadata;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct PeerInfo {
@@ -47,10 +49,19 @@ impl NicknameMap {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TradeRequest {
+    pub requested_file: String,
+    pub offered_file: FileMetadata,
+    pub nickname: String,
+}
+
 pub struct ChatState {
     pub pending_keys: HashSet<kad::QueryId>,
     pub nicknames: NicknameMap,
     pub current_topic: IdentTopic,
+    pub incoming_trades: HashMap<String, TradeRequest>,
+    pub outgoing_trades: HashMap<String, TradeRequest>,
     pub nickname: String
 }
 
@@ -60,6 +71,8 @@ impl ChatState {
             pending_keys: HashSet::new(),
             nicknames: NicknameMap::new(),
             current_topic: IdentTopic::new("chat"),
+            incoming_trades: HashMap::new(),
+            outgoing_trades: HashMap::new(),
             nickname
         }
     }
@@ -92,8 +105,9 @@ pub async fn prompt_for_nickname(
         }
         
     }
-    println!("Nickname set to '{}'", nickname);
-    process_nickname(swarm, &nickname)
+    let new_nickname = process_nickname(swarm, &nickname);
+    println!("Nickname set to '{}'", new_nickname);
+    new_nickname
 }
 
 // Sets the nickname to the given value
