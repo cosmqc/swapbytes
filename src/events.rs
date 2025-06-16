@@ -1,4 +1,5 @@
-use libp2p::request_response;
+use libp2p::multiaddr::Protocol;
+use libp2p::{request_response, Multiaddr};
 use libp2p::{
     gossipsub,
     identity::Keypair,
@@ -153,6 +154,29 @@ pub async fn handle_event(
                 None,
                 chat_state.rendezvous,
             )
+        }
+
+        SwarmEvent::Behaviour(SwapBytesBehaviourEvent::Rendezvous(
+            RendezvousBehaviourEvent::Rendezvous(rendezvous::client::Event::Discovered {
+                registrations,
+                ..
+        }))) => {
+            for registration in registrations {
+                for address in registration.record.addresses() {
+                    let peer = registration.record.peer_id();
+                    println!("Discovered peer: {:?}", peer);
+
+                    let p2p_suffix = Protocol::P2p(peer);
+                    let address_with_p2p =
+                        if !address.ends_with(&Multiaddr::empty().with(p2p_suffix.clone())) {
+                            address.clone().with(p2p_suffix)
+                        } else {
+                            address.clone()
+                        };
+
+                    swarm.dial(address_with_p2p).unwrap();
+                }
+            }
         }
 
         // Default, do nothing

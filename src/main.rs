@@ -96,13 +96,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
             event = swarm.select_next_some() => events::handle_event(&mut swarm, event, &mut chat_state, &mut file_store).await,
 
             // If discovery tick, try to discover new peers
-            _ = discover_tick.tick() =>
-            swarm.behaviour_mut().rendezvous.rendezvous.discover(
-                Some(rendezvous::Namespace::new("rendezvous".to_string()).unwrap()),
-                None,
-                None,
-                chat_state.rendezvous
-            )
+            _ = discover_tick.tick() => {
+                swarm.dial(rendezvous_point_address.clone()).unwrap();
+                swarm.behaviour_mut().rendezvous.rendezvous.discover(
+                    Some(rendezvous::Namespace::new("rendezvous".to_string()).unwrap()),
+                    None,
+                    None,
+                    chat_state.rendezvous
+                )
+            }
         }
     }
 }

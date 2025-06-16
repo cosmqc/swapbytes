@@ -238,7 +238,8 @@ pub async fn handle_input_line(
             {
                 eprintln!(
                     "You can only DM someone while a trade request is open. Open one with /trade"
-                )
+                );
+                return Ok(());
             }
 
             // Parse message
